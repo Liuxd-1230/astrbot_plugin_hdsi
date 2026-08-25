@@ -1,0 +1,8 @@
+name: astrbot_plugin_hdsi
+desc: HDS Interlude for AstrBot：持续叙事运行时。角色拥有独立于聊天窗口持续发展的生活；回复、沉默、延迟和主动联系都是同一段生活剧情的结果。
+display_name: HDS Interlude
+version: v1.0.0
+author: MomoiCore
+repo: https://github.com/MomoiCore/astrbot_plugin_hdsi
+support_platforms: []
+astrbot_version: ">=4.0.0"

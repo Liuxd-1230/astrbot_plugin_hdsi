@@ -1,0 +1,27 @@
+{
+  "enable": {
+    "description": "总开关。关闭后插件不拦截任何消息，后台调度暂停。",
+    "type": "bool",
+    "default": true
+  },
+  "main_model": {
+    "description": "主叙事模型槽。留空 inherit 表示使用当前会话 Provider；也可填 provider_id 或 provider_id:model（如 aiocqhttp_default:gpt-4o-mini）。",
+    "type": "string",
+    "default": "inherit"
+  },
+  "compaction_model": {
+    "description": "压缩/整理模型槽。inherit 时回退主模型。",
+    "type": "string",
+    "default": "inherit"
+  },
+  "alter_model": {
+    "description": "Alter 侧端分析模型槽。inherit 时回退主模型。",
+    "type": "string",
+    "default": "inherit"
+  },
+  "embedding_model": {
+    "description": "Embedding 模型槽。填写 AstrBot 中已配置的 Embedding Provider id；留空禁用语义检索。",
+    "type": "string",
+    "default": ""
+  }
+}
