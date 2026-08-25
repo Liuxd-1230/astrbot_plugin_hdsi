@@ -80,6 +80,7 @@ class RuntimeConfig(BaseModel):
     allow_proactive_messages: bool = False
     proactive_willingness_threshold: float = Field(default=0.65, ge=0, le=1)
     sweep_interval_minutes: int = Field(default=5, ge=1, le=1440)
+    max_stories_per_sweep: int = Field(default=20, ge=1, le=1000)
     minimum_advance_minutes: int = Field(default=30, ge=1, le=10_080)
     context_entry_limit: int = Field(default=30, ge=1, le=200)
     memory_limit: int = Field(default=20, ge=1, le=200)

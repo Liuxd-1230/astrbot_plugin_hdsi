@@ -140,3 +140,17 @@ async def wait_for(condition: Callable[[], bool], timeout: float = 3.0,
         await asyncio.sleep(interval)
         waited += interval
     return condition()
+
+
+async def wait_for_async(condition: Callable[[], Any], timeout: float = 3.0,
+                         interval: float = 0.02) -> bool:
+    """Poll an async condition until truthy or timeout."""
+    import asyncio
+
+    waited = 0.0
+    while waited < timeout:
+        if await condition():
+            return True
+        await asyncio.sleep(interval)
+        waited += interval
+    return bool(await condition())

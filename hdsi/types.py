@@ -723,8 +723,12 @@ def normalize_story_state(value: Any) -> StoryState:
     overlay = overlay_raw if isinstance(overlay_raw, dict) else {}
 
     def _opt_str(key_ts: str, key_py: str | None = None) -> Optional[str]:
-        raw = overlay.get(key_ts) if key_py is None else overlay.get(key_py)
-        return raw if isinstance(raw, str) else None
+        keys = [key_ts] + ([key_py] if key_py and key_py != key_ts else [])
+        for key in keys:
+            raw = overlay.get(key)
+            if isinstance(raw, str):
+                return raw
+        return None
 
     automation_raw = record.get("automation")
     automation = automation_raw if isinstance(automation_raw, dict) else {}
@@ -749,17 +753,19 @@ def normalize_story_state(value: Any) -> StoryState:
     last_auto = automation.get("lastAutoAdvanceAt", automation.get("last_auto_advance_at"))
     last_user = automation.get("lastUserMessageAt", automation.get("last_user_message_at"))
 
+    traits_raw = overlay.get("characterTraits", overlay.get("character_traits"))
+    traits = [
+        item for item in traits_raw if isinstance(item, str)
+    ] if isinstance(traits_raw, list) else []
+
     return StoryState(
         setting_overlay=StorySettingOverlay(
-            character_profile=_opt_str("characterProfile"),
+            character_profile=_opt_str("characterProfile", "character_profile"),
             relationship=_opt_str("relationship"),
             world=_opt_str("world"),
-            supporting_cast=_opt_str("supportingCast"),
+            supporting_cast=_opt_str("supportingCast", "supporting_cast"),
             location=_opt_str("location"),
-            character_traits=[
-                item for item in (overlay.get("characterTraits") or [])
-                if isinstance(item, str)
-            ] if isinstance(overlay.get("characterTraits"), list) else [],
+            character_traits=traits,
         ),
         active_scene_id=record.get("activeSceneId", record.get("active_scene_id")),
         active_arc_id=record.get("activeArcId", record.get("active_arc_id")),

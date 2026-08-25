@@ -272,6 +272,7 @@ class HdsiInterludePlugin(Star):
         self.context.register_web_api("/hdsi/script", self._api_script, ["GET"], "HDSI 剧本查看")
         self.context.register_web_api("/hdsi/intents", self._api_intents, ["GET"], "HDSI 意图列表")
         self.context.register_web_api("/hdsi/maintenance", self._api_maintenance, ["POST"], "HDSI 维护操作")
+        self.context.register_web_api("/hdsi/migrate_config", self._api_migrate_config, ["POST"], "HDSI Koishi 配置导入")
         await self._recover_pending_tasks()
         if self.hdsi_config.enable:
             self.service.start_background_tasks()
@@ -729,6 +730,26 @@ class HdsiInterludePlugin(Star):
         if self.service is None or self.db is None:
             raise RuntimeError("service not initialized")
         return self.service
+
+    async def _api_migrate_config(self, body: Optional[dict] = None):
+        from hdsi.config import deep_merge
+        from hdsi.migration import migrate_koishi_config
+
+        incoming = body or {}
+        koishi_config = incoming.get("koishi_config") if isinstance(incoming, dict) else None
+        if not isinstance(koishi_config, dict):
+            return {"status": "error", "message": "请求体需包含 {\"koishi_config\": {...原始 Koishi HDS-Interlude 配置...}}"}
+        try:
+            patch = migrate_koishi_config(koishi_config)
+        except Exception as error:  # noqa: BLE001
+            return {"status": "error", "message": f"迁移失败：{error}"}
+        merged = deep_merge(self.hdsi_config.model_dump(), patch)
+        self.hdsi_config = HdsiConfig.model_validate(merged)
+        if self.service is not None:
+            self.service.config = self.hdsi_config
+            self.service.narrator.slots = self.hdsi_config.models
+        save_config_file(self.config_path, self.hdsi_config)
+        return {"status": "ok", "message": "Koishi 配置已导入并保存", "data": patch}
 
     async def _api_overview(self):
         service = await self._require_service()

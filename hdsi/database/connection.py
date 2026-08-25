@@ -128,6 +128,10 @@ class Database:
         self._lock = asyncio.Lock()
         self._writes = WriteQueue(max_retries=7)
         self._closed = False
+        # Test hook: when > 0, the next write submissions raise a transient
+        # database error instead of executing (consumed one per attempt).
+        self.fail_transient_writes = 0
+        self.fail_all_writes = False
 
     # ------------------------------------------------------------ lifecycle
 
@@ -186,6 +190,11 @@ class Database:
         """Serialized write with retry."""
 
         async def task() -> None:
+            if self.fail_all_writes:
+                raise RuntimeError("disk I/O error (injected)")
+            if self.fail_transient_writes > 0:
+                self.fail_transient_writes -= 1
+                raise RuntimeError("database is locked (injected transient)")
             conn = self.conn
             await conn.execute(sql, params)
             await conn.commit()

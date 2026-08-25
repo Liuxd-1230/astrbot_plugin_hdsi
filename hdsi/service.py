@@ -16,6 +16,7 @@ Semantic invariants preserved from the original:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 from dataclasses import dataclass, field
@@ -144,6 +145,9 @@ class InterludeService:
         self.scheduled_alter_analyses: set[str] = set()
         self.browser_slots = BrowserSlots(max(1, config.browser.max_concurrent_pages))
 
+        # Real-time backoff used when a flush finds the story busy; hosts with
+        # virtual clocks (simulations/tests) may shrink it.
+        self.story_busy_retry_delay_seconds = 0.25
         self.database_resetting = False
         self.sweep_running = False
         self.compaction_sweep_running = False
@@ -254,9 +258,26 @@ class InterludeService:
 
     # ------------------------------------------------------------ stories
 
-    async def get_canonical_story(self, preferred_id: str | None = None) -> Optional[InterludeStory]:
+    async def get_canonical_story(
+        self,
+        preferred_id: str | None = None,
+        platform_id: str | None = None,
+        self_id: str | None = None,
+    ) -> Optional[InterludeStory]:
+        """One canonical story per bot identity.
+
+        The original Koishi build enforced a single global active story per
+        process; AstrBot routinely serves several bot identities from one
+        instance, so the canonical guard is scoped to (platform, selfId).
+        Stories belonging to other identities are never archived here.
+        """
+        query: dict[str, Any] = {"status": "active"}
+        if platform_id:
+            query["platform_id"] = platform_id
+            if self_id:
+                query["self_id"] = self_id
         rows = await self.db.get(
-            "interlude_story", {"status": "active"},
+            "interlude_story", query,
             order_by="updated_at", descending=True,
         )
         stories = [InterludeStory.model_validate(r) for r in rows]
@@ -278,8 +299,8 @@ class InterludeService:
             })
             self.report_standalone(
                 "warn",
-                "主剧本归档完成 原因=检测到多个活动故事 保留=%s 已归档=%s 范围=%s",
-                canonical.id, story.id, "全局",
+                "主剧本归档完成 原因=同一身份检测到多个活动故事 保留=%s 已归档=%s 身份=%s/%s",
+                canonical.id, story.id, canonical.platform_id, canonical.self_id,
             )
         return canonical
 
@@ -288,13 +309,38 @@ class InterludeService:
 
     async def find_story_for_event(self, event: IncomingEvent) -> Optional[InterludeStory]:
         preferred = self.story_id_for(event)
-        existing = await self.get_canonical_story(preferred)
+        existing = await self.get_canonical_story(
+            preferred, platform_id=event.platform_id, self_id=event.self_id,
+        )
         if existing is not None:
             return existing
         rows = await self.db.get("interlude_story", {"id": preferred})
         if rows:
             return InterludeStory.model_validate(rows[0])
         return None
+
+    async def active_stories(self) -> list[InterludeStory]:
+        """All active stories across bot identities (bounded by config)."""
+        rows = await self.db.get(
+            "interlude_story", {"status": "active"},
+            order_by="updated_at", descending=True,
+            limit=max(1, self.config.runtime.max_stories_per_sweep),
+        )
+
+        # Enforce the per-identity single-story invariant.
+        seen_identity: set[tuple[str, str]] = set()
+        out: list[InterludeStory] = []
+        now = self.now()
+        for story in [InterludeStory.model_validate(r) for r in rows]:
+            key = (story.platform_id, story.self_id)
+            if key in seen_identity:
+                await self.update_row("interlude_story", {"id": story.id}, {
+                    "status": "archived", "updated_at": iso(now),
+                })
+                continue
+            seen_identity.add(key)
+            out.append(story)
+        return out
 
     async def get_story(self, story_id: str) -> InterludeStory:
         rows = await self.db.get("interlude_story", {"id": story_id})
@@ -604,10 +650,12 @@ class InterludeService:
     async def append_entry(
         self,
         story_id: str,
-        draft: ScriptEntryDraft,
+        draft: ScriptEntryDraft | dict[str, Any],
         now: datetime,
         participant_id: str = "",
     ) -> ScriptEntry:
+        if isinstance(draft, dict):
+            draft = ScriptEntryDraft.model_validate(draft)
         occurred_at = parse_date(draft.occurred_at) or now
         row = {
             "story_id": story_id,
@@ -1178,9 +1226,14 @@ async def _flush_buffered_narrative(self: "InterludeService", key: str, revision
             self.buffered_turns.pop(key, None)
 
 
-async def _retry_flush_later(self: "InterludeService", key: str, revision: int, delay: float = 0.25) -> None:
+async def _retry_flush_later(self: "InterludeService", key: str, revision: int,
+                             delay: float | None = None) -> None:
     try:
-        await asyncio.sleep(delay)
+        wait = self.story_busy_retry_delay_seconds if delay is None else delay
+        if wait > 0:
+            await asyncio.sleep(wait)
+        else:
+            await asyncio.sleep(0)
         await self.flush_buffered_narrative(key, revision)
     except asyncio.CancelledError:
         pass
@@ -1704,8 +1757,8 @@ async def _persist_decision(
     context_intents = context_intents or []
     if isinstance(raw, NarrativeDecision):
         decision = raw
-        agency_window_raw = None
-        proactive_raw = None
+        agency_window_raw = decision.agency_window
+        proactive_raw = decision.proactive_contact
     else:
         all_participants = await self.participants(story.id)
         permitted = {
@@ -1786,32 +1839,24 @@ async def _persist_decision(
 
         if self.config.agency.enabled and (phase == "advance" or is_agency_check):
             source_entries: list[ScriptEntry] = []
-            if decision.agency_window is not None or decision.proactive_contact is not None:
+            if agency_window_raw is not None or proactive_raw is not None:
                 source_entries = await self.recent_entries(
                     story.id, max(40, self.config.runtime.context_entry_limit * 2)
                 )
-                if agency_window_raw is None and proactive_raw is None:
-                    source_entries = []
             valid_source_ids = {e.id for e in source_entries}
             if script_entry is not None and script_entry.id:
                 valid_source_ids.add(script_entry.id)
             fallback_source = script_entry.id if script_entry is not None else None
             agency_window = agency_mod.normalize_agency_window_draft(
-                decision.agency_window, now, self.agency_config(),
+                agency_window_raw, now, self.agency_config(),
                 frozenset(valid_source_ids), fallback_source,
             ) or agency_mod.active_agency_window(state.agency_window, now)
             next_state.agency_window = agency_window
             agency_candidate = agency_mod.normalize_proactive_contact(
-                decision.proactive_contact, now, self.agency_config(),
+                proactive_raw, now, self.agency_config(),
                 frozenset({p.id for p in await self.participants(story.id) if self.can_handle_participant(p)}),
                 frozenset(valid_source_ids), fallback_source,
             ) if proactive_raw is not None else None
-            if isinstance(decision.proactive_contact, NarrativeDecision.__mro__[0].__dict__.get("_x", object)):
-                pass
-            # When normalize_decision already produced structured drafts we
-            # re-validate here through agency_mod using the same rules.
-            if agency_candidate is None and proactive_raw is not None:
-                from .normalize import normalize_decision as _nd  # pragma: no cover
 
             if is_agency_check and agency_candidate is not None and participant is not None \
                     and agency_candidate.participant_id != participant.id:
@@ -2120,7 +2165,7 @@ async def _analyze_alter_system(self: "InterludeService", story_id: str, phase: 
                           signed_number(trigger_value), f"{threshold:.2f}",
                           "严肃" if direction > 0 else "放松")
     from .prompt_builder import alter_analysis_prompt
-    from .types import AlterAnalysisRequest, AlterSystemConfig as _ASC, EmotionalOffsetPrompt
+    from .types import AlterAnalysisRequest, EmotionalOffsetPrompt
 
     request_payload = AlterAnalysisRequest(
         character_name=story.setting.character.name,
@@ -2529,37 +2574,49 @@ async def _sweep(self: "InterludeService") -> None:
     self.sweep_running = True
     started_at = self.now()
     try:
-        story = await self.get_canonical_story()
-        if story is None or not self.can_handle_story(story):
+        stories = await self.active_stories()
+        handled = [s for s in stories if self.can_handle_story(s)]
+        if not handled:
             self.report_standalone("diagnostic",
                                    "后台扫描跳过：没有可处理的活动主剧本", verbosity="diagnostic")
             return
-        if self.has_pending_narrative(story.id):
-            pending_due = await self.due_intents(story.id, self.now())
-            delivery_only = bool(pending_due) and all(i.type == "split-message" for i in pending_due)
-            if not delivery_only:
-                self.report_operation("diagnostic", "debug", story, "advance",
-                                      "后台扫描跳过：前台消息回合或合并计时器仍在处理中")
-                return
-            self.report_operation("diagnostic", "debug", story, "advance",
-                                  "前台回合处理中，先投递已确定的分段消息 数量=%d", len(pending_due))
-        automation = story.state.automation
-        self.report_operation("diagnostic", "debug", story, "advance",
-                              "后台扫描开始 游标=%s 下次自动推进=%s",
-                              format_log_time(story.cursor_at, story.setting.timezone),
-                              format_log_time(parse_date(automation.next_advance_at),
-                                              story.setting.timezone))
-        messages = await self.advance_story(story, force=False)
-        if messages:
-            await self.send_outgoing_messages(story, messages)
-        elapsed_ms = round((self.now() - started_at).total_seconds() * 1000)
-        self.report_operation("diagnostic", "debug", story, "advance",
-                              "后台扫描完成 耗时=%dms 已投递=%d", elapsed_ms, len(messages))
+        for story in handled:
+            await self._sweep_one(story)
     finally:
         self.sweep_running = False
 
 
+async def _sweep_one(self: "InterludeService", story: InterludeStory) -> None:
+    started_at = self.now()
+    if self.has_pending_narrative(story.id):
+        # Cooperative scheduling: a skipped sweep must still yield to the
+        # event loop once, otherwise debounced turn tasks can starve on a
+        # host whose only periodic driver is this sweep.
+        pending_due = await self.due_intents(story.id, self.now())
+        delivery_only = bool(pending_due) and all(i.type == "split-message" for i in pending_due)
+        if not delivery_only:
+            self.report_operation("diagnostic", "debug", story, "advance",
+                                  "后台扫描跳过：前台消息回合或合并计时器仍在处理中")
+            await asyncio.sleep(0)
+            return
+        self.report_operation("diagnostic", "debug", story, "advance",
+                              "前台回合处理中，先投递已确定的分段消息 数量=%d", len(pending_due))
+    automation = story.state.automation
+    self.report_operation("diagnostic", "debug", story, "advance",
+                          "后台扫描开始 游标=%s 下次自动推进=%s",
+                          format_log_time(story.cursor_at, story.setting.timezone),
+                          format_log_time(parse_date(automation.next_advance_at),
+                                          story.setting.timezone))
+    messages = await self.advance_story(story, force=False)
+    if messages:
+        await self.send_outgoing_messages(story, messages)
+    elapsed_ms = round((self.now() - started_at).total_seconds() * 1000)
+    self.report_operation("diagnostic", "debug", story, "advance",
+                          "后台扫描完成 耗时=%dms 已投递=%d", elapsed_ms, len(messages))
+
+
 InterludeService.sweep = _sweep  # type: ignore[attr-defined]
+InterludeService._sweep_one = _sweep_one  # type: ignore[attr-defined]
 
 
 async def _advance_unlocked(
@@ -3409,11 +3466,11 @@ async def _compact_stories_sweep(self: "InterludeService") -> None:
         return
     self.compaction_sweep_running = True
     try:
-        story = await self.get_canonical_story()
-        if story is None or not self.can_handle_story(story):
-            return
-        self.schedule_fact_embedding_backfill(story.id)
-        self.schedule_compaction(story.id)
+        for story in await self.active_stories():
+            if not self.can_handle_story(story):
+                continue
+            self.schedule_fact_embedding_backfill(story.id)
+            self.schedule_compaction(story.id)
     finally:
         self.compaction_sweep_running = False
 
@@ -3791,10 +3848,13 @@ async def _persist_state_patch(
         )
         proposal_id = int(fetched["id"]) if fetched else None
     else:
+        candidate_impact = (
+            candidate.impact.value if hasattr(candidate.impact, "value") else str(candidate.impact)
+        )
         await self.db.update("interlude_state_patch", {"id": candidate.id}, {
             "evidence": clip(merged_evidence_text, 4_000),
             "confidence": merged_confidence,
-            "impact": "major" if (candidate.impact.value == "major" or impact == "major") else "minor",
+            "impact": "major" if (candidate_impact == "major" or impact == "major") else "minor",
             "source_entry_ids": merged_source_ids,
         })
 
@@ -4206,7 +4266,7 @@ async def _rebuild_live_overlay_state(self: "InterludeService", story: Interlude
 InterludeService.rebuild_live_overlay_state = _rebuild_live_overlay_state  # type: ignore[attr-defined]
 
 
-async def _schedule_fact_embedding_backfill(self: "InterludeService", story_id: str) -> None:
+def _schedule_fact_embedding_backfill(self: "InterludeService", story_id: str) -> None:
     batch_size = self.config.models.embedding_backfill_batch_size
     if not self.config.models.embedding_model.strip() or batch_size <= 0:
         return
@@ -4399,7 +4459,8 @@ async def _reset_participant_canon(self: "InterludeService", story_id: str, now:
             "UPDATE interlude_participant SET person_id=?, display_name=?, profile=?, "
             "relationship=?, state=?, updated_at=? WHERE id=?",
             (person_id, display_name, profile, relationship,
-             empty_participant_state().model_dump(), iso(now), row["id"]),
+             json.dumps(empty_participant_state().model_dump(), ensure_ascii=False),
+             iso(now), row["id"]),
         ))
     if statements:
         await self.db.execute_many(statements)

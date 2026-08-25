@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HDS Interlude 管理面板</title>
+<style>
+  :root {
+    --bg: #10151c; --panel: #171e28; --panel2: #1d2633; --border: #2a3547;
+    --text: #dfe7f1; --muted: #8b98ab; --accent: #6ea8fe; --ok: #63d489;
+    --warn: #ffca61; --err: #ff8080; --chip: #223046;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 14px; line-height: 1.55;
+  }
+  header {
+    padding: 14px 20px 10px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 17px; letter-spacing: .3px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  nav { display: flex; gap: 4px; flex-wrap: wrap; padding: 10px 16px 0; }
+  nav button {
+    background: transparent; border: 1px solid transparent; color: var(--muted);
+    padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  }
+  nav button.active { background: var(--panel2); color: var(--text); border-color: var(--border); }
+  nav button:hover { color: var(--text); }
+  main { padding: 14px 18px 30px; max-width: 1180px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 14px;
+  }
+  .card h2 { margin: 0 0 10px; font-size: 14px; color: var(--accent); font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+  .kv { background: var(--panel2); border-radius: 8px; padding: 8px 10px; }
+  .kv .k { color: var(--muted); font-size: 12px; }
+  .kv .v { font-size: 13px; word-break: break-all; white-space: pre-wrap; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  tr:hover td { background: rgba(110,168,254,.05); }
+  .chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 1px 10px; font-size: 12px; margin-right: 6px; }
+  .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.err { color: var(--err); }
+  button.act {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 14px; cursor: pointer; font-size: 13px; margin: 2px 6px 2px 0;
+  }
+  button.act:hover { border-color: var(--accent); }
+  button.danger { border-color: #5c2b2b; color: var(--err); }
+  input[type=text], input[type=number], textarea, select {
+    width: 100%; background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 6px 8px; font-size: 13px; font-family: inherit;
+  }
+  textarea { min-height: 90px; resize: vertical; font-family: ui-monospace, monospace; }
+  label.field { display: block; margin-bottom: 8px; }
+  label.field span.lbl { display: block; color: var(--muted); font-size: 12px; margin-bottom: 3px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > * { flex: 1; min-width: 220px; }
+  .toast {
+    position: fixed; bottom: 18px; right: 18px; background: var(--panel2);
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 16px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.45); opacity: 0; transition: opacity .25s; z-index: 99;
+    max-width: 420px;
+  }
+  .toast.show { opacity: 1; }
+  .mono { font-family: ui-monospace, "Cascadia Code", monospace; font-size: 12px; }
+  .muted { color: var(--muted); }
+  .entry-kind { color: var(--accent); }
+  details summary { cursor: pointer; color: var(--muted); }
+  .section-form .obj { border-left: 2px solid var(--border); margin: 6px 0 6px 8px; padding-left: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>HDS Interlude</h1>
+  <span class="sub">持续叙事运行时 · v1.0.0 · 角色拥有独立于聊天窗口持续发展的生活</span>
+  <span style="flex:1"></span>
+  <button class="act" onclick="refreshAll()">刷新</button>
+</header>
+<nav id="tabs"></nav>
+<main id="view"></main>
+<div class="toast" id="toast"></div>
+
+<script src="../../page-bridge-sdk.js"></script>
+<script>
+"use strict";
+const PAGE = {
+  name: "dashboard", title: "HDS Interlude",
+};
+
+const TABS = [
+  ["overview", "总览"], ["canon", "Canon"], ["participants", "参与者"],
+  ["models", "模型"], ["runtime", "运行时"], ["memory", "记忆与事实"],
+  ["intents", "意图"], ["overlay_alter_agency", "Overlay·Alter·Agency"],
+  ["script", "剧本查看"], ["maintenance", "维护"],
+];
+let currentTab = "overview";
+let CFG = null;
+
+function toast(msg, isError) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.style.borderColor = isError ? "var(--err)" : "var(--border)";
+  el.classList.add("show");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove("show"), 3200);
+}
+
+async function apiGet(endpoint, params) {
+  if (window.AstrBotPluginPage && window.AstrBotPluginPage.apiGet) {
+    return await window.AstrBotPluginPage.apiGet(endpoint, params || {});
+  }
+  const q = params ? "?" + new URLSearchParams(params).toString() : "";
+  const res = await fetch("/api/v1/plugins/extensions/astrbot_plugin_hdsi" + endpoint + q,
+    { credentials: "include" });
+  const data = await res.json();
+  if (data.status === "error") throw new Error(data.message || "request failed");
+  return data.data;
+}
+
+async function apiPost(endpoint, body) {
+  if (window.AstrBotPluginPage && window.AstrBotPluginPage.apiPost) {
+    return await window.AstrBotPluginPage.apiPost(endpoint, body || {});
+  }
+  const res = await fetch("/api/v1/plugins/extensions/astrbot_plugin_hdsi" + endpoint, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    credentials: "include", body: JSON.stringify(body || {}),
+  });
+  const data = await res.json();
+  if (data.status === "error") throw new Error(data.message || "request failed");
+  return data.data !== undefined ? data.data : data;
+}
+
+function esc(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function fmtTime(isoText) {
+  if (!isoText) return "-";
+  try { return String(isoText).replace("T", " ").slice(0, 19); } catch { return isoText; }
+}
+
+/* ------------------------------------------------ tabs */
+
+function renderTabs() {
+  const nav = document.getElementById("tabs");
+  nav.innerHTML = "";
+  TABS.forEach(([id, label]) => {
+    const btn = document.createElement("button");
+    btn.textContent = label;
+    if (id === currentTab) btn.className = "active";
+    btn.onclick = () => { currentTab = id; renderTabs(); render(); };
+    nav.appendChild(btn);
+  });
+}
+
+async function render() {
+  const view = document.getElementById("view");
+  view.innerHTML = '<div class="muted">加载中…</div>';
+  try {
+    if (currentTab === "overview") await renderOverview(view);
+    else if (currentTab === "canon") await renderCanon(view);
+    else if (currentTab === "participants") await renderParticipants(view);
+    else if (currentTab === "models") await renderSectionForm(view, "models", "models", "模型槽位与采样参数。inherit 表示跟随当前会话 Provider；provider_id:model 指定具体模型；逗号分隔可配置故障切换链。");
+    else if (currentTab === "runtime") await renderSectionForm(view, "runtime", "runtime", "对话节奏、消息合并、延迟回复边界、自动推进与休息窗口。");
+    else if (currentTab === "memory") await renderSectionForm(view, "memory", "memory", "场景压缩阈值、长期事实预算、剧情余波与 Overlay 分层压缩。");
+    else if (currentTab === "intents") await renderIntents(view);
+    else if (currentTab === "overlay_alter_agency") await renderOAA(view);
+    else if (currentTab === "script") await renderScript(view);
+    else if (currentTab === "maintenance") await renderMaintenance(view);
+  } catch (error) {
+    view.innerHTML = `<div class="card"><h2>加载失败</h2><div class="mono">${esc(error.message)}</div></div>`;
+  }
+}
+
+/* ------------------------------------------------ overview */
+
+async function renderOverview(view) {
+  const data = await apiGet("/hdsi/overview");
+  if (!data || !data.story) {
+    view.innerHTML = '<div class="card">当前没有活动故事。发送 <b>hdsi init 主角名</b> 创建。</div>';
+    return;
+  }
+  const s = data.story;
+  const alterChip = s.alterSystem && s.alterSystem.hasOffset
+    ? `<span class="chip ok">offset 生效中</span>` : `<span class="chip">无 offset</span>`;
+  const agency = s.agencyWindow
+    ? `${s.agencyWindow.activityLoad} / ${s.agencyWindow.privacy} / ${s.agencyWindow.deviceAccess}（至 ${fmtTime(s.agencyWindow.validUntil)}）`
+    : "尚未建立";
+  view.innerHTML = `
+  <div class="card"><h2>当前故事</h2><div class="grid">
+    ${kv("故事 ID", s.id)}
+    ${kv("主角", s.characterName)}
+    ${kv("状态", s.status)}
+    ${kv("参与者数", s.participants)}
+    ${kv("Story 游标", fmtTime(s.cursorAt))}
+    ${kv("当前本地时间", `${s.localTime}（${s.timezone}）`)}
+    ${kv("下次自动推进", fmtTime(s.automation.nextAdvanceAt))}
+    ${kv("短期补写队列", (s.automation.followUps || []).map(fmtTime).join("、") || "无")}
+    ${kv("主动联系开关", s.allowProactive ? "开启" : "关闭")}
+    ${kv("Agency Window", agency)}
+    ${kv("Alter", `累计 ${s.alterSystem ? s.alterSystem.alterValue : 0} ${alterChip}`)}
+  </div></div>
+  <div class="card"><h2>Continuity 快照</h2>${s.continuity
+    ? `<div class="grid">
+        ${kv("current", s.continuity.current || "-")}
+        ${kv("next", (s.continuity.next || []).join("\n") || "-")}
+        ${kv("recent", (s.continuity.recent || []).join("\n") || "-")}
+        ${kv("salient", (s.continuity.salient || []).join("\n") || "-")}
+      </div>` : '<span class="muted">尚无快照，首次自动推进后生成。</span>'}</div>
+  <div class="card"><h2>Pending Intent（未来可能性，非已发生剧情）</h2>
+    ${table(["ID", "类型", "参与者", "最早执行", "摘要"],
+      (data.pendingIntents || []).map(i => [i.id, i.type, i.participantId || "全局", fmtTime(i.notBefore), i.summary]))}
+  </div>
+  <div class="card"><h2>最近剧情（真实 ScriptEntry）</h2>
+    ${table(["#", "时间", "类型", "内容"],
+      (data.recentScript || []).map(e => [`#${e.id}`, fmtTime(e.occurredAt), `<span class="entry-kind">${esc(e.actor)}/${esc(e.kind)}</span>`, esc(e.content)]))}
+  </div>`;
+}
+
+function kv(k, v) {
+  return `<div class="kv"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`;
+}
+function table(headers, rows) {
+  if (!rows.length) return '<span class="muted">暂无数据。</span>';
+  return `<table><thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead>
+  <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+}
+
+/* ------------------------------------------------ canon */
+
+async function renderCanon(view) {
+  await ensureConfig();
+  const d = CFG.story_defaults;
+  view.innerHTML = `
+  <div class="card"><h2>Canon：剧本起点</h2>
+    <p class="muted">初始 Canon 只由显式配置修改；模型的长期变化写入 Overlay。大幅修改身份/关系/世界后请在“维护”页清理对应 Overlay。</p>
+    <div class="row">
+      <label class="field"><span class="lbl">character_name 主角名</span><input type="text" data-path="story_defaults.character_name" value="${esc(d.character_name)}"></label>
+      <label class="field"><span class="lbl">timezone 时区</span><input type="text" data-path="story_defaults.timezone" value="${esc(d.timezone)}"></label>
+      <label class="field"><span class="lbl">location 地点</span><input type="text" data-path="story_defaults.location" value="${esc(d.location)}"></label>
+    </div>
+    ${ta("story_defaults.character_profile", "character_profile 主角背景、性格、日程和说话方式", d.character_profile)}
+    ${ta("story_defaults.world", "world 世界设定", d.world)}
+    ${ta("story_defaults.supporting_cast", "supporting_cast 配角", d.supporting_cast)}
+    ${ta("story_defaults.relationship", "relationship 默认初始关系", d.relationship)}
+    ${ta("story_defaults.user_profile", "user_profile 默认用户资料", d.user_profile)}
+    ${ta("story_defaults.style", "style 故事文风", d.style)}
+    <button class="act" onclick="saveConfigFromForms()">保存 Canon</button>
+  </div>
+  <div class="card"><h2>提示词</h2>
+    ${ta("prompts.main_prompt", "main_prompt 主叙事行为指令", CFG.prompts.main_prompt)}
+    ${ta("prompts.style_prompt", "style_prompt 全局文风", CFG.prompts.style_prompt)}
+    ${ta("prompts.fixed_prompt", "fixed_prompt 额外固定约束", CFG.prompts.fixed_prompt)}
+    ${ta("prompts.format_prompt", "format_prompt 结构化输出补充", CFG.prompts.format_prompt)}
+    ${ta("prompts.compaction_prompt", "compaction_prompt 压缩任务指令", CFG.prompts.compaction_prompt)}
+    <button class="act" onclick="saveConfigFromForms()">保存提示词</button>
+  </div>`;
+}
+
+function ta(path, label, value) {
+  return `<label class="field"><span class="lbl">${esc(label)}</span>
+    <textarea data-path="${esc(path)}">${esc(value)}</textarea></label>`;
+}
+
+let cfgPromise = null;
+async function ensureConfig() {
+  if (!CFG) {
+    if (!cfgPromise) cfgPromise = apiGet("/hdsi/config").then(cfg => { CFG = cfg; return cfg; });
+    CFG = await cfgPromise;
+  }
+  return CFG;
+}
+
+function collectFormValues(root) {
+  const patch = {};
+  root.querySelectorAll("[data-path]").forEach(el => {
+    const parts = el.dataset.path.split(".");
+    let node = patch;
+    while (parts.length > 1) {
+      const key = parts.shift();
+      node[key] = node[key] || {};
+      node = node[key];
+    }
+    const key = parts[0];
+    let value = el.value;
+    if (el.type === "checkbox") value = el.checked;
+    else if (el.type === "number") value = Number(el.value);
+    node[key] = value;
+  });
+  return patch;
+}
+
+async function saveConfigFromForms() {
+  const patch = collectFormValues(document.getElementById("view"));
+  await apiPost("/hdsi/config", patch);
+  CFG = null;
+  toast("配置已保存并即时生效");
+}
+
+/* ------------------------------------------------ generic section forms */
+
+const BOOL_HINTS = {};
+async function renderSectionForm(view, tabKey, sectionKey, intro) {
+  await ensureConfig();
+  const container = document.createElement("div");
+  container.innerHTML = `
+    <div class="card"><h2>${esc(sectionKey)}</h2>
+      <p class="muted">${esc(intro)}</p>
+      <div class="section-form" id="secform"></div>
+      <button class="act" onclick="saveConfigFromForms()">保存本页修改</button>
+    </div>`;
+  view.innerHTML = "";
+  view.appendChild(container);
+  const host = container.querySelector("#secform");
+  renderObjectFields(host, CFG[sectionKey], [sectionKey]);
+}
+
+function renderObjectFields(host, obj, pathPrefix) {
+  Object.entries(obj || {}).forEach(([key, value]) => {
+    const path = [...pathPrefix, key].join(".");
+    if (Array.isArray(value)) {
+      if (value.every(v => typeof v !== "object")) {
+        host.appendChild(fieldWrap(path, key, "list",
+          `<textarea data-path="${esc(path)}" style="min-height:52px">${esc(value.join("\n"))}</textarea>`));
+      } else {
+        const details = document.createElement("details");
+        details.innerHTML = `<summary>${esc(key)}（${value.length} 项列表对象）</summary>`;
+        value.forEach((item, idx) => {
+          const sub = document.createElement("div");
+          sub.className = "obj";
+          renderObjectFields(sub, item, [...pathPrefix, key, idx]);
+          details.appendChild(sub);
+        });
+        host.appendChild(details);
+      }
+    } else if (typeof value === "object" && value !== null) {
+      const details = document.createElement("details");
+      details.innerHTML = `<summary>${esc(key)}</summary>`;
+      const sub = document.createElement("div");
+      sub.className = "obj";
+      renderObjectFields(sub, value, [...pathPrefix, key]);
+      details.appendChild(sub);
+      host.appendChild(details);
+    } else if (typeof value === "boolean") {
+      host.appendChild(fieldWrap(path, key, "bool",
+        `<select data-path="${esc(path)}"><option value="true"${value ? " selected" : ""}>true</option><option value="false"${!value ? " selected" : ""}>false</option></select>`));
+    } else if (typeof value === "number") {
+      host.appendChild(fieldWrap(path, key, "num",
+        `<input type="number" step="any" data-path="${esc(path)}" value="${esc(value)}">`));
+    } else {
+      host.appendChild(fieldWrap(path, key, "text",
+        `<input type="text" data-path="${esc(path)}" value="${esc(value)}">`));
+    }
+  });
+}
+
+function fieldWrap(path, label, kind, controlHtml) {
+  const wrap = document.createElement("label");
+  wrap.className = "field";
+  wrap.innerHTML = `<span class="lbl">${esc(label)} <span class="muted">(${kind})</span></span>${controlHtml}`;
+  return wrap;
+}
+
+/* ------------------------------------------------ participants */
+
+async function renderParticipants(view) {
+  const rows = await apiGet("/hdsi/participants");
+  view.innerHTML = `<div class="card"><h2>参与者（同一 Canonical Story 的关系分支）</h2>
+    ${table(["ID", "称呼", "personId", "状态", "未读/待回", "关系摘要"],
+      (rows || []).map(p => [
+        `<span class="mono">${esc(p.id)}</span>`, esc(p.displayName), esc(p.personId),
+        p.status === "active" ? '<span class="chip ok">active</span>' : '<span class="chip warn">paused</span>',
+        `${p.state.unread_message_count}/${p.state.pending_reply_count}`,
+        esc((p.relationship || "").slice(0, 120)),
+      ]))}
+    <p class="muted">默认禁止把某位参与者的原始私聊发给其他参与者的主模型上下文；跨参与者仅共享受控摘要与全局后果。</p>
+  </div>`;
+}
+
+/* ------------------------------------------------ intents */
+
+async function renderIntents(view) {
+  const rows = await apiGet("/hdsi/intents");
+  view.innerHTML = `<div class="card"><h2>Intent 账本</h2>
+    <p class="muted">Intent 是未来的可能性：到期后重新读取当时生活并由主模型重新裁决，绝不直接发送预写台词。</p>
+    ${table(["ID", "类型", "参与者", "notBefore", "状态", "摘要", "操作"],
+      (rows || []).map(i => [
+        i.id, esc(i.type), esc(i.participant_id || "全局"),
+        fmtTime(i.not_before), `<span class="chip">${esc(i.status)}</span>`,
+        esc(String(i.summary).slice(0, 160)),
+        `<button class="act danger" onclick="cancelIntent(${i.id})">取消</button>`,
+      ]))}
+  </div>`;
+}
+
+async function cancelIntent(id) {
+  if (!confirm(`确认取消意图 #${id}？`)) return;
+  await apiPost("/hdsi/maintenance", { action: "cancel_intent", arg: String(id) });
+  toast(`意图 #${id} 已取消`);
+  render();
+}
+
+/* ------------------------------------------------ OAA */
+
+async function renderOAA(view) {
+  await ensureConfig();
+  const data = await apiGet("/hdsi/overview");
+  const s = data && data.story;
+  view.innerHTML = `
+  <div class="card"><h2>Overlay（长期稳定演化，非 Canon 覆盖）</h2>
+    ${s ? kv("当前 live overlay", JSON.stringify(s.protagonistOverlay, null, 1)) : ""}
+    <p class="muted">证据门槛：普通变化需跨多个独立回合与日期且置信度达标；重大变化需更高置信度。压缩归档保留审计轨迹。</p>
+    <button class="act" onclick="maint('compact_overlay')">立即压缩归档 Overlay</button>
+    <button class="act danger" onclick="clearOverlay('all')">清理全部 overlay</button>
+  </div>
+  <div class="card"><h2>Alter System（短期氛围惯性）</h2>
+    <div class="grid">
+      ${kv("累计值", s && s.alterSystem ? s.alterSystem.alterValue : 0)}
+      ${kv("触发阈值(基础)", CFG.alter_system.base_threshold)}
+      ${kv("同向增强", CFG.alter_system.same_direction_boost)}
+      ${kv("反向衰减", CFG.alter_system.opposite_decay)}
+      ${kv("最小权重", CFG.alter_system.min_weight)}
+      ${kv("启用", CFG.alter_system.enabled)}
+    </div>
+    <p class="muted">职责边界：Overlay=长期演化；Alter=氛围惯性；Agency=行动条件。三者不混用。</p>
+  </div>
+  <div class="card"><h2>Agency Window（外部行动容量）</h2>
+    <div class="grid">
+      ${kv("当前状态", s && s.agencyWindow ? JSON.stringify({负荷: s.agencyWindow.activityLoad, 隐私: s.agencyWindow.privacy, 设备: s.agencyWindow.deviceAccess}) : "尚未建立")}
+      ${kv("有效至", s && s.agencyWindow ? fmtTime(s.agencyWindow.validUntil) : "-")}
+      ${kv("依据 basis", s && s.agencyWindow ? s.agencyWindow.basis : "-")}
+      ${kv("来源条目", s && s.agencyWindow ? (s.agencyWindow.sourceEntryIds || []).join(",") : "-")}
+      ${kv("意愿门槛", CFG.runtime.proactive_willingness_threshold)}
+      ${kv("最小间隔(分)", CFG.agency.minimum_proactive_interval_minutes)}
+    </div>
+  </div>`;
+}
+
+async function clearOverlay(target) {
+  if (!confirm(`确认清理 ${target} overlay？剧本与记忆不会删除，但该层演化将清空。`)) return;
+  if (!confirm("再次确认：该操作会丢弃已积累的设定演化。继续？")) return;
+  const result = await apiPost("/hdsi/maintenance", { action: "clear_overlay", arg: target });
+  toast(result.message || "完成");
+  render();
+}
+
+/* ------------------------------------------------ script viewer */
+
+let scriptOffset = 0;
+async function renderScript(view) {
+  const limit = 50;
+  const rows = await apiGet("/hdsi/script", { limit, offset: scriptOffset });
+  view.innerHTML = `<div class="card"><h2>剧本查看（事实来源 ScriptEntry）</h2>
+    <div>
+      <button class="act" onclick="scriptOffset=Math.max(0,scriptOffset-${limit});render()">上一页</button>
+      <button class="act" onclick="scriptOffset+=${limit};render()">下一页</button>
+      <span class="muted mono">offset=${scriptOffset}</span>
+    </div>
+    ${table(["#", "occurredAt", "kind/actor", "participant", "内容"],
+      (rows || []).slice().reverse().map(e => [
+        e.id, fmtTime(e.occurred_at),
+        `<span class="entry-kind">${esc(e.kind)}</span>/${esc(e.actor)}`,
+        esc(e.participant_id || ""),
+        `<span class="mono" style="white-space:pre-wrap">${esc(e.content)}</span>`,
+      ]))}
+  </div>`;
+}
+
+/* ------------------------------------------------ maintenance */
+
+async function renderMaintenance(view) {
+  view.innerHTML = `
+  <div class="card"><h2>常规维护</h2>
+    <button class="act" onclick="maint('advance')">force advance（手动补写到现在）</button>
+    <button class="act" onclick="maint('compact')">立即整理一次记忆压缩</button>
+    <button class="act" onclick="maint('compact_overlay')">压缩归档 Overlay</button>
+    <button class="act" onclick="maint('rebuild_continuity')">重建 continuity</button>
+  </div>
+  <div class="card"><h2>危险操作（需二次确认）</h2>
+    <button class="act danger" onclick="clearOverlay('character')">clear character overlay</button>
+    <button class="act danger" onclick="clearOverlay('relationship')">clear relationship overlay</button>
+    <button class="act danger" onclick="clearOverlay('world')">clear world overlay</button>
+    <button class="act danger" onclick="resetStory()">reset story（重置全部剧本与记忆）</button>
+    <p class="muted">重置会删除所有平台的剧本、记忆、事实、意图和状态，并按当前 Canon 重建空白故事。</p>
+  </div>
+  <div class="card"><h2>说明</h2>
+    <p class="muted">HDS Interlude for AstrBot 是持续叙事运行时，而不是 Persona 插件。角色拥有独立于聊天窗口持续发展的生活；回复、沉默、延迟和主动联系都是同一段生活剧情的结果。</p>
+  </div>`;
+}
+
+async function maint(action, arg) {
+  try {
+    const result = await apiPost("/hdsi/maintenance", { action, arg });
+    toast(result.message || "已完成");
+  } catch (error) {
+    toast(error.message, true);
+  }
+  render();
+}
+
+async function resetStory() {
+  if (!confirm("确认重置全部剧本、记忆与 Canon？此操作不可逆。")) return;
+  if (!confirm("最后确认：所有平台的 HDSI 剧情数据将被删除。继续？")) return;
+  await maint("purge");
+}
+
+async function refreshAll() {
+  CFG = null; cfgPromise = null;
+  render();
+}
+
+/* ------------------------------------------------ boot */
+
+(async function boot() {
+  renderTabs();
+  if (window.AstrBotPluginPage && window.AstrBotPluginPage.ready) {
+    try { await window.AstrBotPluginPage.ready(); } catch {}
+  }
+  render();
+})();
+</script>
+</body>
+</html>
