@@ -148,13 +148,41 @@ class Database:
             await conn.execute("PRAGMA synchronous=NORMAL")
             await conn.execute("PRAGMA foreign_keys=ON")
             await conn.executescript(DDL)
+            await self._run_migrations(conn)
             await conn.execute(
                 "INSERT INTO hdsi_meta(key, value) VALUES('schema_version', ?) "
-                "ON CONFLICT(key) DO NOTHING",
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (str(SCHEMA_VERSION),),
             )
             await conn.commit()
             self._conn = conn
+
+    @staticmethod
+    async def _run_migrations(conn: aiosqlite.Connection) -> None:
+        cursor = await conn.execute(
+            "SELECT value FROM hdsi_meta WHERE key='schema_version'"
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        try:
+            version = int(row[0]) if row else 0
+        except (TypeError, ValueError):
+            version = 0
+        if version < 2:
+            # v2: outbox idempotency — spoken entries carry the staging
+            # intent id as a real, uniquely-indexed column.
+            cursor = await conn.execute("PRAGMA table_info(interlude_script_entry)")
+            cols = {r[1] for r in await cursor.fetchall()}
+            await cursor.close()
+            if "delivery_intent_id" not in cols:
+                await conn.execute(
+                    "ALTER TABLE interlude_script_entry ADD COLUMN delivery_intent_id INTEGER"
+                )
+            await conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_entry_delivery_intent "
+                "ON interlude_script_entry(delivery_intent_id) "
+                "WHERE delivery_intent_id IS NOT NULL"
+            )
 
     async def close(self) -> None:
         async with self._lock:
@@ -238,6 +266,32 @@ class Database:
                 raise
 
         await self._writes.submit(task, retryable=self._retryable)
+
+    async def transact(self, fn: Callable[[aiosqlite.Connection], Awaitable[Any]]) -> Any:
+        """Run fn(conn) inside ONE serialized BEGIN..COMMIT unit.
+
+        Includes the commit-failure test hook; any exception rolls back.
+        """
+        async def task() -> Any:
+            if self.fail_all_writes:
+                raise RuntimeError("disk I/O error (injected)")
+            conn = self.conn
+            await conn.execute("BEGIN")
+            try:
+                result = await fn(conn)
+                if self.fail_next_commit > 0:
+                    self.fail_next_commit -= 1
+                    raise RuntimeError("database is locked (injected commit failure)")
+                await conn.commit()
+                return result
+            except BaseException:
+                try:
+                    await conn.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
+
+        return await self._writes.submit(task, retryable=self._retryable)
 
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
         async def task() -> list[dict[str, Any]]:

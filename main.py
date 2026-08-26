@@ -324,6 +324,11 @@ class HdsiInterludePlugin(Star):
             self.context.register_web_api(f"{api}/intents", self._api_intents, ["GET"], "HDSI 意图列表")
             self.context.register_web_api(f"{api}/maintenance", self._api_maintenance, ["POST"], "HDSI 维护操作")
             self.context.register_web_api(f"{api}/migrate_config", self._api_migrate_config, ["POST"], "HDSI Koishi 配置导入")
+        # Round-3 P0-2: crash-left `sending` rows become `uncertain`
+        # (no resend, no fabricated spoken fact) before anything else.
+        uncertain = await self.service.recover_stale_sending()
+        if uncertain:
+            logger.warning("[hdsi] %d 条投递因崩溃标记为 uncertain", uncertain)
         await self._recover_pending_tasks()
         if self.hdsi_config.enable:
             self.service.start_background_tasks()
@@ -369,7 +374,8 @@ class HdsiInterludePlugin(Star):
         assert self.service is not None
         stories = await self.service.active_stories()
         now = datetime.now(timezone.utc)
-        wake_types = {"split-message", "outbound-message", "delayed-reply",
+        wake_types = {"split-message", "outbound-message",
+                      "outbound-group-message", "delayed-reply",
                       "proactive-check", "narrative-retry",
                       "cross-conversation-message"}
         total = 0

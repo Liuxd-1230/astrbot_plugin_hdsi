@@ -2157,68 +2157,143 @@ async def _mark_intent_sending(self: "InterludeService", intent_ids: list[int]) 
     ])
 
 
-async def _finalize_delivered_message(
+async def _finalize_delivery_transaction(
     self: "InterludeService",
-    story: InterludeStory,
-    participant: InterludeParticipant,
+    story_id: str,
+    participant_id: str,
     content: str,
     delivery_intent_id: Optional[int],
     now: datetime,
-) -> None:
-    """Transport succeeded: only now does the message become a spoken fact.
+) -> bool:
+    """Round-3 P0-1/P0-2: transport and finalization are SEPARATE phases.
 
-    State is re-read from the database (never from the pre-transport
-    snapshot object) and counter baselines captured at compose time are
-    subtracted, so user messages that arrived DURING transport survive
-    finalize with their unread/pending accounting intact (P0-D).
+    Writes spoken-fact entry + participant accounting + intent completion
+    inside ONE SQLite transaction, idempotently keyed by the staging intent
+    id (unique partial index on script_entry.delivery_intent_id).
+    Returns False when this delivery was already finalized (duplicate call).
     """
-    metadata: dict[str, Any] = {"visible": True}
-    if delivery_intent_id:
-        metadata["deliveryIntentId"] = delivery_intent_id
-    await self.append_entry(story.id, ScriptEntryDraft(
-        kind="character-message", actor="character", content=content,
-        occurred_at=iso(now), metadata=metadata,
-    ), now, participant.id)
+    import sqlite3 as _sqlite3
 
-    latest = await self.get_participant(participant.id) or participant
-    current = normalize_participant_state(latest.state)
-    base_unread: Optional[int] = None
-    base_pending: Optional[int] = None
-    if delivery_intent_id:
-        rows = await self.db.get("interlude_intent", {"id": delivery_intent_id})
-        if rows:
-            payload = rows[0].get("payload") or {}
-            if isinstance(payload, str):
+    async def txn(conn) -> bool:
+        intent_status = None
+        payload: dict[str, Any] = {}
+        if delivery_intent_id:
+            cur = await conn.execute(
+                "SELECT status, payload FROM interlude_intent WHERE id=?",
+                (delivery_intent_id,),
+            )
+            row = await cur.fetchone()
+            await cur.close()
+            if row is None:
+                return False
+            intent_status = row[0]
+            raw_payload = row[1]
+            if isinstance(raw_payload, str):
                 try:
-                    payload = json.loads(payload)
+                    payload = json.loads(raw_payload)
                 except ValueError:
                     payload = {}
-            base_unread = payload.get("snapshotUnread")
-            base_pending = payload.get("snapshotPending")
+            elif isinstance(raw_payload, dict):
+                payload = raw_payload
+            if intent_status == "completed":
+                return False
 
-    updates: dict[str, Any] = {
-        "last_character_message_at": iso(now),
-    }
-    if base_unread is not None or base_pending is not None:
-        bu = int(base_unread or 0)
-        bp = int(base_pending or 0)
-        updates["unread_message_count"] = max(0, current.unread_message_count - bu)
-        updates["pending_reply_count"] = max(0, current.pending_reply_count - bp)
-    else:
-        # Legacy/segment path without a snapshot: full settle.
-        updates["unread_message_count"] = 0
-        updates["pending_reply_count"] = 0
-    new_state = current.model_copy(update={
-        "unread_message_count": updates["unread_message_count"],
-        "pending_reply_count": updates["pending_reply_count"],
-        "last_character_message_at": updates["last_character_message_at"],
-    })
-    await self.db.update("interlude_participant", {"id": participant.id}, {
-        "state": new_state.model_dump(mode="json"), "updated_at": iso(now),
-    })
-    if delivery_intent_id:
-        await self.db.update("interlude_intent", {"id": delivery_intent_id},
-                             {"status": "completed", "updated_at": iso(now)})
+        metadata: dict[str, Any] = {"visible": True}
+        if delivery_intent_id:
+            metadata["deliveryIntentId"] = delivery_intent_id
+
+        # Idempotent spoken-fact insert keyed on the staging intent.
+        try:
+            cur = await conn.execute(
+                "INSERT INTO interlude_script_entry "
+                "(story_id, participant_id, kind, actor, content, occurred_at,"
+                " metadata, created_at, delivery_intent_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    story_id, participant_id, "character-message", "character",
+                    clip(content, 12_000), iso(now),
+                    json.dumps(metadata, ensure_ascii=False),
+                    iso(now), delivery_intent_id,
+                ),
+            )
+            entry_id = int(cur.lastrowid or 0)
+        except _sqlite3.IntegrityError:
+            # Unique index hit: another finalize already recorded it.
+            entry_id = None
+
+        # Participant accounting: read LATEST state inside the txn and
+        # subtract compose-time baselines so in-flight arrivals survive.
+        cur = await conn.execute(
+            "SELECT state FROM interlude_participant WHERE id=?",
+            (participant_id,),
+        )
+        prow = await cur.fetchone()
+        await cur.close()
+        state_raw = prow[0] if prow else "{}"
+        if isinstance(state_raw, str):
+            try:
+                state_dict = json.loads(state_raw)
+            except ValueError:
+                state_dict = {}
+        else:
+            state_dict = state_raw or {}
+
+        def _count(key: str) -> int:
+            v = state_dict.get(key, 0)
+            try:
+                return max(0, int(v))
+            except (TypeError, ValueError):
+                return 0
+
+        base_unread = payload.get("snapshotUnread")
+        base_pending = payload.get("snapshotPending")
+        if base_unread is not None or base_pending is not None:
+            new_unread = max(0, _count("unread_message_count") - int(base_unread or 0))
+            new_pending = max(0, _count("pending_reply_count") - int(base_pending or 0))
+        else:
+            new_unread = 0
+            new_pending = 0
+        state_dict["unread_message_count"] = new_unread
+        state_dict["pending_reply_count"] = new_pending
+        state_dict["last_character_message_at"] = iso(now)
+
+        await conn.execute(
+            "UPDATE interlude_participant SET state=?, updated_at=? WHERE id=?",
+            (json.dumps(state_dict, ensure_ascii=False), iso(now), participant_id),
+        )
+        if delivery_intent_id:
+            await conn.execute(
+                "UPDATE interlude_intent SET status='completed', updated_at=? WHERE id=?",
+                (iso(now), delivery_intent_id),
+            )
+        return True
+
+    finalized = await self.db.transact(txn)
+    if finalized and entry_id_logging_enabled():
+        pass
+    return finalized
+
+
+def entry_id_logging_enabled() -> bool:  # pragma: no cover - tiny helper
+    return False
+
+
+async def _cancel_undelivered_messages(
+    self: "InterludeService",
+    story: InterludeStory,
+    messages: list[OutgoingMessageDraft],
+    now: datetime,
+) -> None:
+    """Superseded before transport: only PENDING rows can be cancelled.
+    A row already in `sending` is protected by design (P0-D)."""
+    ids = [m.delivery_intent_id for m in messages if m.delivery_intent_id]
+    if not ids:
+        return
+    await self.db.execute_many([
+        ("UPDATE interlude_intent SET status='cancelled', updated_at=? "
+         "WHERE id=? AND status='pending'",
+         (iso(now), intent_id)) for intent_id in ids
+    ])
 
 
 async def _defer_undelivered_for_retry(
@@ -2227,9 +2302,9 @@ async def _defer_undelivered_for_retry(
     message: OutgoingMessageDraft,
     now: datetime,
 ) -> None:
-    """Transport FAILED for a `sending` row: revert to pending (+30s) so the
-    committed words still get their chance, without ever having been written
-    as a spoken fact (original '发送失败保留并延后重试' semantics)."""
+    """Transport FAILED for a sending/pending row: revert to pending (+30s)
+    so the committed words still get their chance, without ever having been
+    written as a spoken fact (原版 '发送失败保留并延后重试' semantics)."""
     if not message.delivery_intent_id:
         return
     retry_at = now + timedelta(seconds=30)
@@ -2240,26 +2315,33 @@ async def _defer_undelivered_for_retry(
     )
     self.schedule_due_intent_wake(story.id, retry_at)
 
+# --- registrations (AFTER every def above) ---
+InterludeService.cancel_undelivered_messages = _cancel_undelivered_messages  # type: ignore[attr-defined]
+InterludeService.defer_undelivered_for_retry = _defer_undelivered_for_retry  # type: ignore[attr-defined]
 
-async def _cancel_undelivered_messages(self: "InterludeService", story: InterludeStory, messages: list[OutgoingMessageDraft], now: datetime) -> None:
-    """Superseded before transport: the world never heard these words and
-    never will — only PENDING rows are cancellable by definition."""
-    ids = [m.delivery_intent_id for m in messages
-           if m.delivery_intent_id and m not in getattr(story, "_keep_retrying", [])]
-    await self.db.execute_many([
-        ("UPDATE interlude_intent SET status='cancelled', updated_at=? WHERE id=? AND status='pending'",
-         (iso(now), intent_id)) for intent_id in ids
-    ])
-    for message_item in messages:
-        if message_item.delivery_intent_id:
-            # A row that was already SENDING cannot be cancelled; if we reach
-            # here for one (should_cancel raced), defer it for retry instead.
-            await self.db.execute(
-                "UPDATE interlude_intent SET status='pending', not_before=?, updated_at=? "
-                "WHERE id=? AND status='sending'",
-                (iso(now + timedelta(seconds=30)), iso(now), message_item.delivery_intent_id),
-            )
-            self.schedule_due_intent_wake(story.id, now + timedelta(seconds=30))
+
+async def _finalize_delivered_message(
+    self: "InterludeService",
+    story: InterludeStory,
+    participant: InterludeParticipant,
+    content: str,
+    delivery_intent_id: Optional[int],
+    now: datetime,
+) -> None:
+    """Backwards-compatible wrapper around the transactional finalize."""
+    await self.finalize_delivery_transaction(
+        story.id, participant.id, content, delivery_intent_id, now,
+    )
+
+
+InterludeService.finalize_delivered_message = _finalize_delivered_message  # type: ignore[attr-defined]
+InterludeService.finalize_delivery_transaction = _finalize_delivery_transaction  # type: ignore[attr-defined]
+
+
+
+
+InterludeService.stage_outbound_message = _stage_outbound_message  # type: ignore[attr-defined]
+InterludeService._mark_intent_sending = _mark_intent_sending  # type: ignore[attr-defined]
 
 
 async def _finalize_group_delivered(
@@ -2272,20 +2354,16 @@ async def _finalize_group_delivered(
     now: datetime,
 ) -> None:
     """Group transport succeeded: write the spoken fact."""
+    metadata_extra: dict[str, Any] = {"groupId": group_id, "channelId": channel_id}
+    if delivery_intent_id:
+        metadata_extra["deliveryIntentId"] = delivery_intent_id
     await self.append_entry(story.id, ScriptEntryDraft(
         kind="character-group-message", actor="character", content=content,
-        occurred_at=iso(now),
-        metadata={"groupId": group_id, "channelId": channel_id,
-                  "deliveryIntentId": delivery_intent_id},
+        occurred_at=iso(now), metadata=metadata_extra,
     ), now)
     if delivery_intent_id:
         await self.db.update("interlude_intent", {"id": delivery_intent_id},
                              {"status": "completed", "updated_at": iso(now)})
-
-
-InterludeService.stage_outbound_message = _stage_outbound_message  # type: ignore[attr-defined]
-InterludeService._mark_intent_sending = _mark_intent_sending  # type: ignore[attr-defined]
-InterludeService.finalize_group_delivered = _finalize_group_delivered  # type: ignore[attr-defined]
 
 
 async def _deliver_group_outbound(
@@ -2297,12 +2375,13 @@ async def _deliver_group_outbound(
     """Deliver a staged GROUP message through the same outbox rules.
 
     Routing lives in the intent payload so a crash between stage and send
-    recovers on restart instead of silently dropping the message (P1).
+    recovers on restart instead of silently dropping the message.
     """
     payload = intent.payload
     group_id = str(payload.get("groupId") or "")
     channel_id = str(payload.get("channelId") or group_id)
-    content = clip(payload.get("content"), self.config.runtime.max_message_characters)         if isinstance(payload.get("content"), str) else ""
+    content = clip(payload.get("content"), self.config.runtime.max_message_characters) \
+        if isinstance(payload.get("content"), str) else ""
     if not content or not group_id or self.group_sender is None:
         await self.db.update("interlude_intent", {"id": intent.id},
                              {"status": "cancelled", "updated_at": iso(now)})
@@ -2318,19 +2397,51 @@ async def _deliver_group_outbound(
                                             content, intent.id, now)
         return True
     retry_at = now + timedelta(seconds=30)
+    # The row was flipped to `sending` before transport; revert to pending so
+    # it is retried instead of becoming a permanent zombie (round-3 P1).
     await self.db.execute(
-        "UPDATE interlude_intent SET not_before=?, updated_at=? "
-        "WHERE id=? AND status='pending'",
+        "UPDATE interlude_intent SET status='pending', not_before=?, updated_at=? "
+        "WHERE id=? AND status IN ('sending','pending')",
         (iso(retry_at), iso(now), intent.id),
     )
     self.schedule_due_intent_wake(story.id, retry_at)
     return False
 
 
+async def _recover_stale_sending(self: "InterludeService") -> int:
+    """Startup crash recovery for the outbox (round-3 P0-2).
+
+    A row still `sending` at boot means the previous process died between
+    handing the message to the platform and writing `completed`. Without a
+    platform delivery receipt we CANNOT know whether the user received it,
+    so the honest policy is:
+
+    - mark it `uncertain`
+    - never auto-resend
+    - never fabricate a spoken fact
+    - surface it in logs / WebUI intent list
+    """
+    rows = await self.db.get("interlude_intent", {"status": "sending"})
+    if not rows:
+        return 0
+    now = iso(self.now())
+    await self.db.execute_many([
+        ("UPDATE interlude_intent SET status='uncertain', updated_at=? WHERE id=?",
+         (now, r["id"])) for r in rows
+    ])
+    for r in rows:
+        self.report_standalone(
+            "warn",
+            "发现崩溃遗留的 sending 投递，已标记为 uncertain（不重发、不虚构事实） "
+            "意图=%s 故事=%s",
+            r["id"], r["story_id"],
+        )
+    return len(rows)
+
+
+InterludeService.finalize_group_delivered = _finalize_group_delivered  # type: ignore[attr-defined]
 InterludeService._deliver_group_outbound = _deliver_group_outbound  # type: ignore[attr-defined]
-InterludeService.finalize_delivered_message = _finalize_delivered_message  # type: ignore[attr-defined]
-InterludeService.cancel_undelivered_messages = _cancel_undelivered_messages  # type: ignore[attr-defined]
-InterludeService.defer_undelivered_for_retry = _defer_undelivered_for_retry  # type: ignore[attr-defined]
+InterludeService.recover_stale_sending = _recover_stale_sending  # type: ignore[attr-defined]
 
 
 def _agency_config(self: "InterludeService") -> AgencyConfig:
@@ -2853,6 +2964,7 @@ async def _send_outgoing_messages(
                                   "新消息打断主角输入，停止发送后续分段 参与者=%s", target.id)
             await self.cancel_undelivered_messages(story, [message], self.now())
             continue
+        # ---- PHASE 1: transport (its failure may safely defer a retry) ----
         try:
             self.report_operation("standard", "info", story, "intent-due",
                                   "消息投递开始 参与者=%s", target.id)
@@ -2860,26 +2972,79 @@ async def _send_outgoing_messages(
                 self.write_report("info", story.setting.character.name, "intent-due",
                                   "主角消息内容：%s",
                                   (message.content[: self.config.logging.preview_length],))
-            ok = await self.sender(story, target, message.content)
-            if ok:
-                delivered.append(message)
-                # P0-1: only a confirmed transport makes the words "spoken".
+            transport_ok = bool(await self.sender(story, target, message.content))
+        except Exception as error:  # noqa: BLE001
+            transport_ok = False
+            transport_error: Any = error
+        else:
+            transport_error = None
+
+        if not transport_ok:
+            await self.defer_undelivered_for_retry(story, message, self.now())
+            self.write_report("warn", story.setting.character.name, "intent-due",
+                              "消息投递失败 参与者=%s 错误=%s",
+                              (target.id, transport_error))
+            continue
+
+        # ---- PHASE 2: finalization. The user HAS received the message; its
+        # failure must NEVER lead to a resend — only finalize retries.
+        delivered.append(message)
+        finalize_failed = False
+        for attempt in range(3):
+            try:
                 await self.finalize_delivered_message(
                     story, target, message.content,
                     message.delivery_intent_id, self.now(),
                 )
-            else:
-                await self.defer_undelivered_for_retry(story, message, self.now())
-                self.write_report("warn", story.setting.character.name, "intent-due",
-                                  "消息投递失败：发送通道不可用，已延后重试 参与者=%s", (target.id,))
-        except Exception as error:  # noqa: BLE001
-            await self.defer_undelivered_for_retry(story, message, self.now())
-            self.write_report("warn", story.setting.character.name, "intent-due",
-                              "消息投递失败 参与者=%s 错误=%s", (target.id, error))
+                finalize_failed = False
+                break
+            except Exception as fe:  # noqa: BLE001
+                finalize_failed = True
+                if attempt < 2:
+                    await asyncio.sleep(0.25 * (attempt + 1))
+                else:
+                    self.write_report(
+                        "error", story.setting.character.name, "intent-due",
+                        "投递后落库失败（不会重发消息） 参与者=%s 意图=%s 错误=%s",
+                        (target.id, message.delivery_intent_id, fe))
+        if finalize_failed and message.delivery_intent_id:
+            # Leave status='sending' and schedule finalize-only retries.
+            loop2 = asyncio.get_running_loop()
+            loop2.create_task(self._retry_finalize_only(
+                story, target, message.content, message.delivery_intent_id,
+            ))
     return delivered
 
 
+async def _retry_finalize_only(
+    self: "InterludeService",
+    story: InterludeStory,
+    participant: InterludeParticipant,
+    content: str,
+    delivery_intent_id: int,
+    attempts: int = 5,
+) -> None:
+    """Finalize-only retry after transport succeeded. NEVER resends."""
+    delay = 30.0
+    for attempt in range(attempts):
+        await asyncio.sleep(delay)
+        delay *= 2
+        try:
+            await self.finalize_delivery_transaction(
+                story.id, participant.id, content, delivery_intent_id, self.now(),
+            )
+            self.report_operation("standard", "info", story, "intent-due",
+                                  "投递后落库重试成功 意图=%s", delivery_intent_id)
+            return
+        except Exception as error:  # noqa: BLE001
+            logger.warning("[hdsi] finalize-only 重试失败(%d/%s)：%s",
+                           attempt + 1, attempts, error)
+    logger.error("[hdsi] finalize-only 重试耗尽 意图=%s；保留 sending 状态供人工处理",
+                 delivery_intent_id)
+
+
 InterludeService.send_outgoing_messages = _send_outgoing_messages  # type: ignore[attr-defined]
+InterludeService._retry_finalize_only = _retry_finalize_only  # type: ignore[attr-defined]
 
 
 # ------------------------------------------------------------------ advance & sweep

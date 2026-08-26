@@ -5,7 +5,7 @@ migration/export tool can map rows 1:1. Timestamps are stored as ISO-8601
 UTC text; JSON columns are TEXT.
 """
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 TABLES: tuple[str, ...] = (
     "interlude_story",
@@ -70,10 +70,15 @@ CREATE TABLE IF NOT EXISTS interlude_script_entry (
   content TEXT NOT NULL DEFAULT '',
   occurred_at TEXT NOT NULL,
   metadata TEXT NOT NULL DEFAULT '{}',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  delivery_intent_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_entry_story_time ON interlude_script_entry(story_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_entry_kind ON interlude_script_entry(story_id, kind);
+-- P0-1(v2): idempotent finalize — one spoken fact per staged delivery, ever.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_entry_delivery_intent
+  ON interlude_script_entry(delivery_intent_id)
+  WHERE delivery_intent_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS interlude_memory (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
