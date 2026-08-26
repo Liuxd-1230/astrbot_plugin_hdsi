@@ -263,16 +263,19 @@ class HdsiInterludePlugin(Star):
             now_fn=lambda: datetime.now(timezone.utc),
             browser_fetch=self._browser_fetch,
         )
-        self.context.register_web_api(
-            "/hdsi/overview", self._api_overview, ["GET"], "HDSI 总览"
-        )
-        self.context.register_web_api("/hdsi/config", self._api_get_config, ["GET"], "HDSI 配置读取")
-        self.context.register_web_api("/hdsi/config", self._api_set_config, ["POST"], "HDSI 配置保存")
-        self.context.register_web_api("/hdsi/participants", self._api_participants, ["GET"], "HDSI 参与者")
-        self.context.register_web_api("/hdsi/script", self._api_script, ["GET"], "HDSI 剧本查看")
-        self.context.register_web_api("/hdsi/intents", self._api_intents, ["GET"], "HDSI 意图列表")
-        self.context.register_web_api("/hdsi/maintenance", self._api_maintenance, ["POST"], "HDSI 维护操作")
-        self.context.register_web_api("/hdsi/migrate_config", self._api_migrate_config, ["POST"], "HDSI Koishi 配置导入")
+        # Routes must be registered under the plugin-name prefix so the
+        # dashboard page-bridge path /api/v1/plugins/extensions/<plugin>/<route>
+        # full-matches; the unprefixed form keeps /api/plug/<plugin>/<route>
+        # (legacy alias) working for direct calls.
+        for api in (f"/{PLUGIN_NAME}/hdsi", "/hdsi"):
+            self.context.register_web_api(f"{api}/overview", self._api_overview, ["GET"], "HDSI 总览")
+            self.context.register_web_api(f"{api}/config", self._api_get_config, ["GET"], "HDSI 配置读取")
+            self.context.register_web_api(f"{api}/config", self._api_set_config, ["POST"], "HDSI 配置保存")
+            self.context.register_web_api(f"{api}/participants", self._api_participants, ["GET"], "HDSI 参与者")
+            self.context.register_web_api(f"{api}/script", self._api_script, ["GET"], "HDSI 剧本查看")
+            self.context.register_web_api(f"{api}/intents", self._api_intents, ["GET"], "HDSI 意图列表")
+            self.context.register_web_api(f"{api}/maintenance", self._api_maintenance, ["POST"], "HDSI 维护操作")
+            self.context.register_web_api(f"{api}/migrate_config", self._api_migrate_config, ["POST"], "HDSI Koishi 配置导入")
         await self._recover_pending_tasks()
         if self.hdsi_config.enable:
             self.service.start_background_tasks()
@@ -731,11 +734,32 @@ class HdsiInterludePlugin(Star):
             raise RuntimeError("service not initialized")
         return self.service
 
+    @staticmethod
+    async def _request_json_body() -> Optional[dict]:
+        """Read the JSON body via the dashboard request proxy when the
+        framework did not inject it as handler kwargs."""
+        try:
+            from astrbot.api.web import request as _plugin_request
+
+            body = await _plugin_request.json()
+            if isinstance(body, dict):
+                return body
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from astrbot.api.web import request as _plugin_request
+
+            raw = await _plugin_request.body()
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:  # noqa: BLE001
+            return None
+
     async def _api_migrate_config(self, body: Optional[dict] = None):
         from hdsi.config import deep_merge
         from hdsi.migration import migrate_koishi_config
 
-        incoming = body or {}
+        incoming = body or (await self._request_json_body()) or {}
         koishi_config = incoming.get("koishi_config") if isinstance(incoming, dict) else None
         if not isinstance(koishi_config, dict):
             return {"status": "error", "message": "请求体需包含 {\"koishi_config\": {...原始 Koishi HDS-Interlude 配置...}}"}
@@ -811,8 +835,8 @@ class HdsiInterludePlugin(Star):
     async def _api_set_config(self, payload: Optional[dict] = None, body: Optional[dict] = None):
         from .hdsi.config import deep_merge
 
-        incoming = body or payload or {}
-        if not isinstance(incoming, dict):
+        incoming = body or payload or (await self._request_json_body()) or {}
+        if not isinstance(incoming, dict) or not incoming:
             return {"status": "error", "message": "配置必须是 JSON 对象"}
         merged = deep_merge(self.hdsi_config.model_dump(), incoming)
         try:
@@ -822,7 +846,18 @@ class HdsiInterludePlugin(Star):
         self.hdsi_config = updated
         if self.service is not None:
             self.service.config = updated
+            self.service.narrator.slots = updated.models
         save_config_file(self.config_path, updated)
+        # Mirror the four schema-bound slots back into AstrBotConfig so the
+        # WebUI 插件页与 _conf_schema.json 保持一致。
+        if self.raw_config is not None:
+            try:
+                for key in ("main_model", "compaction_model", "alter_model", "embedding_model"):
+                    setattr(self.raw_config, key, getattr(updated.models, key))
+                setattr(self.raw_config, "enable", updated.enable)
+                self.raw_config.save_config()
+            except Exception:  # noqa: BLE001
+                pass
         return {"status": "ok"}
 
     async def _api_participants(self):

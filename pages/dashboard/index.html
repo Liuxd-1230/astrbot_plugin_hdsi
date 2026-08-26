@@ -110,12 +110,15 @@ function toast(msg, isError) {
   el._t = setTimeout(() => el.classList.remove("show"), 3200);
 }
 
+const PLUGIN = "astrbot_plugin_hdsi";
+const API_BASE = "/" + PLUGIN + "/hdsi";
+
 async function apiGet(endpoint, params) {
   if (window.AstrBotPluginPage && window.AstrBotPluginPage.apiGet) {
-    return await window.AstrBotPluginPage.apiGet(endpoint, params || {});
+    return await window.AstrBotPluginPage.apiGet(API_BASE + endpoint, params || {});
   }
   const q = params ? "?" + new URLSearchParams(params).toString() : "";
-  const res = await fetch("/api/v1/plugins/extensions/astrbot_plugin_hdsi" + endpoint + q,
+  const res = await fetch(`/api/v1/plugins/extensions/${PLUGIN}${API_BASE}${endpoint}${q}`,
     { credentials: "include" });
   const data = await res.json();
   if (data.status === "error") throw new Error(data.message || "request failed");
@@ -124,9 +127,9 @@ async function apiGet(endpoint, params) {
 
 async function apiPost(endpoint, body) {
   if (window.AstrBotPluginPage && window.AstrBotPluginPage.apiPost) {
-    return await window.AstrBotPluginPage.apiPost(endpoint, body || {});
+    return await window.AstrBotPluginPage.apiPost(API_BASE + endpoint, body || {});
   }
-  const res = await fetch("/api/v1/plugins/extensions/astrbot_plugin_hdsi" + endpoint, {
+  const res = await fetch(`/api/v1/plugins/extensions/${PLUGIN}${API_BASE}${endpoint}`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     credentials: "include", body: JSON.stringify(body || {}),
   });
