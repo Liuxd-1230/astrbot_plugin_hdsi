@@ -6,6 +6,12 @@
 <title>HDS Interlude</title>
 <style>
 :root{--bg:#f7f8fa;--card:#fff;--border:#e2e6ea;--text:#1a1a2e;--sub:#666;--accent:#4f6ef7;--ok:#22a55f;--warn:#d4940;--err:#d32f2f}
+@media(prefers-color-scheme:dark){:root{--bg:#1a1a2e;--card:#222244;--border:#333355;--text:#e8e8f0;--sub:#aaaacc;--accent:#7b9cf7;--ok:#4dd88a;--warn:#f0c040;--err:#f06060}
+body{background:var(--bg);color:var(--text)}
+.field input,.field textarea,.field select{background:#2a2a4a;color:var(--text);border-color:var(--border)}
+.btn{background:var(--card);color:var(--text);border-color:var(--border)}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.6}
 .wrap{max-width:720px;margin:0 auto;padding:20px 16px 60px}
@@ -49,6 +55,7 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"
 .btn.primary:hover{opacity:.9}
 .btn.danger{color:var(--err);border-color:#f5c6c6}
 .btn.danger:hover{background:#fef2f2}
+@media(prefers-color-scheme:dark){.step .status-tag.todo{background:#3a3020;color:#f0c040}.btn.danger{border-color:#553333}.btn.danger:hover{background:#3a2020}.card,.banner{background:var(--card);border-color:var(--border);color:var(--text)}.muted{color:var(--sub)}.toast{background:var(--accent);color:#fff}.info-row{border-color:var(--border)}}
 
 /* ---- info rows ---- */
 .info-row{display:flex;gap:8px;padding:6px 0;border-bottom:1px solid #f0f0f0;font-size:13px}
@@ -65,9 +72,12 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"
 /* ---- form ---- */
 .field{margin-bottom:10px}
 .field label{display:block;font-size:12px;color:var(--sub);margin-bottom:3px}
-.field input,.field textarea,.field select{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;background:#fafbfc}
+.field input,.field textarea,.field select{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;background:#fafbfc;color:var(--text)}
 .field textarea{min-height:70px;resize:vertical}
 .field input:focus,.field textarea:focus{outline:none;border-color:var(--accent)}
+@media(prefers-color-scheme:dark){.field input,.field textarea,.field select{background:#2a2a4a;color:var(--text);border-color:var(--border)}
+.field input:focus,.field textarea:focus{border-color:var(--accent)}
+}
 
 /* ---- toast ---- */
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--text);color:#fff;padding:10px 22px;border-radius:99px;font-size:13px;opacity:0;transition:.3s;z-index:999;pointer-events:none}

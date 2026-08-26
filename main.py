@@ -1093,7 +1093,10 @@ class HdsiInterludePlugin(Star):
                                  order_by="not_before", limit=100)
         return {"status": "ok", "data": rows}
 
-    async def _api_maintenance(self, action: str = "", arg: str = ""):
+    async def _api_maintenance(self, body: Optional[dict] = None):
+        incoming = body or (await self._request_json_body()) or {}
+        action = str(incoming.get("action", "")).strip()
+        arg = str(incoming.get("arg", "")).strip()
         service = await self._require_service()
         story = await service.latest_active_story()
         if story is None:
