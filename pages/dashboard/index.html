@@ -85,7 +85,6 @@
 <main id="view"></main>
 <div class="toast" id="toast"></div>
 
-<script src="../../page-bridge-sdk.js"></script>
 <script>
 "use strict";
 const PAGE = {
@@ -111,31 +110,47 @@ function toast(msg, isError) {
 }
 
 const PLUGIN = "astrbot_plugin_hdsi";
-const API_BASE = "/" + PLUGIN + "/hdsi";
 
-async function apiGet(endpoint, params) {
-  if (window.AstrBotPluginPage && window.AstrBotPluginPage.apiGet) {
-    return await window.AstrBotPluginPage.apiGet(API_BASE + endpoint, params || {});
-  }
-  const q = params ? "?" + new URLSearchParams(params).toString() : "";
-  const res = await fetch(`/api/v1/plugins/extensions/${PLUGIN}${API_BASE}${endpoint}${q}`,
-    { credentials: "include" });
-  const data = await res.json();
-  if (data.status === "error") throw new Error(data.message || "request failed");
-  return data.data;
+function normalizeEndpoint(endpoint) {
+  return String(endpoint || "").replace(/^\/+/, "");
 }
 
-async function apiPost(endpoint, body) {
-  if (window.AstrBotPluginPage && window.AstrBotPluginPage.apiPost) {
-    return await window.AstrBotPluginPage.apiPost(API_BASE + endpoint, body || {});
+async function apiGet(endpoint, params = {}) {
+  const path = normalizeEndpoint(endpoint);
+  if (window.AstrBotPluginPage?.apiGet) {
+    return await window.AstrBotPluginPage.apiGet(path, params);
   }
-  const res = await fetch(`/api/v1/plugins/extensions/${PLUGIN}${API_BASE}${endpoint}`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    credentials: "include", body: JSON.stringify(body || {}),
-  });
-  const data = await res.json();
-  if (data.status === "error") throw new Error(data.message || "request failed");
-  return data.data !== undefined ? data.data : data;
+  const query = new URLSearchParams(params).toString();
+  const url =
+    `/api/v1/plugins/extensions/${PLUGIN}/${path}` +
+    (query ? `?${query}` : "");
+  const response = await fetch(url, { credentials: "include" });
+  const data = await response.json();
+  if (!response.ok || data?.status === "error") {
+    throw new Error(data?.message || `HTTP ${response.status}`);
+  }
+  return data?.data !== undefined ? data.data : data;
+}
+
+async function apiPost(endpoint, body = {}) {
+  const path = normalizeEndpoint(endpoint);
+  if (window.AstrBotPluginPage?.apiPost) {
+    return await window.AstrBotPluginPage.apiPost(path, body);
+  }
+  const response = await fetch(
+    `/api/v1/plugins/extensions/${PLUGIN}/${path}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(body),
+    },
+  );
+  const data = await response.json();
+  if (!response.ok || data?.status === "error") {
+    throw new Error(data?.message || `HTTP ${response.status}`);
+  }
+  return data?.data !== undefined ? data.data : data;
 }
 
 function esc(value) {

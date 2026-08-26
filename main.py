@@ -311,19 +311,18 @@ class HdsiInterludePlugin(Star):
             browser_fetch=self._browser_fetch,
             image_loader=self._image_loader,
         )
-        # Routes must be registered under the plugin-name prefix so the
-        # dashboard page-bridge path /api/v1/plugins/extensions/<plugin>/<route>
-        # full-matches; the unprefixed form keeps /api/plug/<plugin>/<route>
-        # (legacy alias) working for direct calls.
-        for api in (f"/{PLUGIN_NAME}/hdsi", "/hdsi"):
-            self.context.register_web_api(f"{api}/overview", self._api_overview, ["GET"], "HDSI 总览")
-            self.context.register_web_api(f"{api}/config", self._api_get_config, ["GET"], "HDSI 配置读取")
-            self.context.register_web_api(f"{api}/config", self._api_set_config, ["POST"], "HDSI 配置保存")
-            self.context.register_web_api(f"{api}/participants", self._api_participants, ["GET"], "HDSI 参与者")
-            self.context.register_web_api(f"{api}/script", self._api_script, ["GET"], "HDSI 剧本查看")
-            self.context.register_web_api(f"{api}/intents", self._api_intents, ["GET"], "HDSI 意图列表")
-            self.context.register_web_api(f"{api}/maintenance", self._api_maintenance, ["POST"], "HDSI 维护操作")
-            self.context.register_web_api(f"{api}/migrate_config", self._api_migrate_config, ["POST"], "HDSI Koishi 配置导入")
+        # Routes are registered under `{PLUGIN_NAME}/hdsi/*`. The dashboard
+        # bridge builds /api/v1/plugins/extensions/{PLUGIN}/{endpoint} which
+        # full-matches this registration.
+        api = f"/{PLUGIN_NAME}/hdsi"
+        self.context.register_web_api(f"{api}/overview", self._api_overview, ["GET"], "HDSI 总览")
+        self.context.register_web_api(f"{api}/config", self._api_get_config, ["GET"], "HDSI 配置读取")
+        self.context.register_web_api(f"{api}/config", self._api_set_config, ["POST"], "HDSI 配置保存")
+        self.context.register_web_api(f"{api}/participants", self._api_participants, ["GET"], "HDSI 参与者")
+        self.context.register_web_api(f"{api}/script", self._api_script, ["GET"], "HDSI 剧本查看")
+        self.context.register_web_api(f"{api}/intents", self._api_intents, ["GET"], "HDSI 意图列表")
+        self.context.register_web_api(f"{api}/maintenance", self._api_maintenance, ["POST"], "HDSI 维护操作")
+        self.context.register_web_api(f"{api}/migrate_config", self._api_migrate_config, ["POST"], "HDSI Koishi 配置导入")
         # Round-3 P0-2: crash-left `sending` rows become `uncertain`
         # (no resend, no fabricated spoken fact) before anything else.
         uncertain = await self.service.recover_stale_sending()
