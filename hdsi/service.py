@@ -2353,17 +2353,69 @@ async def _finalize_group_delivered(
     delivery_intent_id: Optional[int],
     now: datetime,
 ) -> None:
-    """Group transport succeeded: write the spoken fact."""
-    metadata_extra: dict[str, Any] = {"groupId": group_id, "channelId": channel_id}
-    if delivery_intent_id:
-        metadata_extra["deliveryIntentId"] = delivery_intent_id
-    await self.append_entry(story.id, ScriptEntryDraft(
-        kind="character-group-message", actor="character", content=content,
-        occurred_at=iso(now), metadata=metadata_extra,
-    ), now)
-    if delivery_intent_id:
-        await self.db.update("interlude_intent", {"id": delivery_intent_id},
-                             {"status": "completed", "updated_at": iso(now)})
+    """Backwards-compatible wrapper around the transactional group finalize."""
+    await self.finalize_group_delivery_transaction(
+        story.id, group_id, channel_id, content, delivery_intent_id, now,
+    )
+
+
+async def _finalize_group_delivery_transaction(
+    self: "InterludeService",
+    story_id: str,
+    group_id: str,
+    channel_id: str,
+    content: str,
+    delivery_intent_id: Optional[int],
+    now: datetime,
+) -> bool:
+    """Round-4 P0: transactional + idempotent group spoken-fact write.
+
+    Same guarantee as the private path: entry + intent completion in ONE
+    SQLite transaction; the unique partial index on delivery_intent_id
+    makes repeated calls a no-op.
+    Returns False when already finalized.
+    """
+    import sqlite3 as _sqlite3
+
+    async def txn(conn) -> bool:
+        if delivery_intent_id:
+            cur = await conn.execute(
+                "SELECT status FROM interlude_intent WHERE id=?",
+                (delivery_intent_id,),
+            )
+            row = await cur.fetchone()
+            await cur.close()
+            if row is None or row[0] == "completed":
+                return False
+
+        metadata = json.dumps({
+            "groupId": group_id, "channelId": channel_id,
+            **({"deliveryIntentId": delivery_intent_id} if delivery_intent_id else {}),
+        }, ensure_ascii=False)
+
+        try:
+            await conn.execute(
+                "INSERT INTO interlude_script_entry "
+                "(story_id, participant_id, kind, actor, content, occurred_at,"
+                " metadata, created_at, delivery_intent_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    story_id, "", "character-group-message", "character",
+                    clip(content, 12_000), iso(now),
+                    metadata, iso(now), delivery_intent_id,
+                ),
+            )
+        except _sqlite3.IntegrityError:
+            return False  # unique index hit: already finalized
+
+        if delivery_intent_id:
+            await conn.execute(
+                "UPDATE interlude_intent SET status='completed', updated_at=? WHERE id=?",
+                (iso(now), delivery_intent_id),
+            )
+        return True
+
+    return await self.db.transact(txn)
 
 
 async def _deliver_group_outbound(
@@ -2386,26 +2438,40 @@ async def _deliver_group_outbound(
         await self.db.update("interlude_intent", {"id": intent.id},
                              {"status": "cancelled", "updated_at": iso(now)})
         return False
+    # P0 (round-4): each intent maps to EXACTLY ONE platform send — no
+    # splitting here; segments were staged as separate intents upstream.
     await self._mark_intent_sending([intent.id])
+    # ---- PHASE 1: transport ----
     try:
-        ok = bool(await self.group_sender(story, channel_id, content))
+        transport_ok = bool(await self.group_sender(story, channel_id, content))
     except Exception as error:  # noqa: BLE001
         logger.warning("[hdsi] 群 outbox 投递异常 群=%s 错误=%s", group_id, error)
-        ok = False
-    if ok:
-        await self.finalize_group_delivered(story, group_id, channel_id,
-                                            content, intent.id, now)
-        return True
-    retry_at = now + timedelta(seconds=30)
-    # The row was flipped to `sending` before transport; revert to pending so
-    # it is retried instead of becoming a permanent zombie (round-3 P1).
-    await self.db.execute(
-        "UPDATE interlude_intent SET status='pending', not_before=?, updated_at=? "
-        "WHERE id=? AND status IN ('sending','pending')",
-        (iso(retry_at), iso(now), intent.id),
-    )
-    self.schedule_due_intent_wake(story.id, retry_at)
-    return False
+        transport_ok = False
+    if not transport_ok:
+        retry_at = now + timedelta(seconds=30)
+        await self.db.execute(
+            "UPDATE interlude_intent SET status='pending', not_before=?, updated_at=? "
+            "WHERE id=? AND status IN ('sending','pending')",
+            (iso(retry_at), iso(now), intent.id),
+        )
+        self.schedule_due_intent_wake(story.id, retry_at)
+        return False
+    # ---- PHASE 2: finalization (never leads to resend) ----
+    for attempt in range(3):
+        try:
+            await self.finalize_group_delivery_transaction(
+                story.id, group_id, channel_id, content, intent.id, now,
+            )
+            return True
+        except Exception as fe:  # noqa: BLE001
+            if attempt >= 2:
+                self.write_report(
+                    "error", story.setting.character.name, "intent-due",
+                    "群聊投递后落库失败（不会重发） 群=%s 意图=%s 错误=%s",
+                    (group_id, intent.id, fe))
+            else:
+                await asyncio.sleep(0.25 * (attempt + 1))
+    return True
 
 
 async def _recover_stale_sending(self: "InterludeService") -> int:
@@ -2441,6 +2507,7 @@ async def _recover_stale_sending(self: "InterludeService") -> int:
 
 InterludeService.finalize_group_delivered = _finalize_group_delivered  # type: ignore[attr-defined]
 InterludeService._deliver_group_outbound = _deliver_group_outbound  # type: ignore[attr-defined]
+InterludeService.finalize_group_delivery_transaction = _finalize_group_delivery_transaction  # type: ignore[attr-defined]
 InterludeService.recover_stale_sending = _recover_stale_sending  # type: ignore[attr-defined]
 
 

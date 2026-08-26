@@ -572,22 +572,29 @@ class HdsiInterludePlugin(Star):
             result = await service.queues.run(story.id, lambda: self._persist_group_turn(
                 turn, snapshot, outcome,
             ))
-            if result["content"]:
-                # P0-1 outbox: entry is written only after real transport.
-                sent = await self._send_group(story, turn.channel_id, result["content"])
-                if sent:
-                    await service.queues.run(story.id, lambda: service.finalize_group_delivered(
-                        story, turn.group_id, turn.channel_id,
-                        result["content"], result.get("delivery_intent_id"),
-                        datetime.now(timezone.utc),
+            # Round-4: each staged intent is delivered individually through
+            # _deliver_group_outbound (two-phase: transport → finalize).
+            staged_ids = result.get("staged_ids", [])
+            if staged_ids:
+                # Deliver only the FIRST segment immediately; subsequent ones
+                # go through the wake/sweep mechanism like private splits.
+                rows = await self.db.get("interlude_intent", {"id": staged_ids[0]})
+                if rows:
+                    from .hdsi.types import NarrativeIntent
+
+                    intent = NarrativeIntent.model_validate(rows[0])
+                    await service.queues.run(story.id, lambda: service._deliver_group_outbound(
+                        story, intent, datetime.now(timezone.utc),
                     ))
-                else:
-                    await service.cancel_undelivered_messages(story, [], datetime.now(timezone.utc))
-                    await self.db.execute(
-                        "UPDATE interlude_intent SET status='cancelled', updated_at=? "
-                        "WHERE id=? AND status='pending'",
-                        (iso(datetime.now(timezone.utc)), result.get("delivery_intent_id") or 0),
-                    )
+                # Subsequent segments are woken via schedule_due_intent_wake
+                # which was set by stage_outbound_message timing.
+                if len(staged_ids) > 1:
+                    next_rows = await self.db.get(
+                        "interlude_intent", {"id": staged_ids[1]})
+                    if next_rows:
+                        next_nb = parse_date(next_rows[0]["not_before"])
+                        if next_nb:
+                            service.schedule_due_intent_wake(story.id, max(next_nb, datetime.now(timezone.utc)))
             service.schedule_compaction(story.id)
         except Exception as error:  # noqa: BLE001
             logger.warning("[hdsi] 群聊主叙事失败：群=%s 错误=%s", turn.group_id, error)
@@ -664,17 +671,35 @@ class HdsiInterludePlugin(Star):
             permit_messages=False, phase="user-message",
         )
         content = normalize_group_reply_local(decision_raw, self.hdsi_config.runtime.max_message_characters)
-        delivery_intent_id: int | None = None
+        staged_ids: list[int] = []
         if content:
-            # Stage only (P0-1): the visible group entry is written after
-            # transport succeeds. Routing lives in the payload so restart
-            # recovery can redeliver instead of silently dropping (P1).
-            delivery_intent_id = await self.service.stage_outbound_message(
-                story.id, "", content, outcome["effective_now"],
-                intent_type="outbound-group-message",
-                extra_payload={"groupId": turn.group_id,
-                               "channelId": turn.channel_id},
-            )
+            # P0 (round-4): split at stage time so each intent maps to
+            # EXACTLY ONE platform send — the DB outbox unit and the real
+            # external side-effect are always 1:1.
+            first, later = self.service.split_outgoing_message(content)
+            segments = [first, *later] if first else []
+            typing_started = outcome["effective_now"]
+            delay_ms = 0.0
+            for seg in segments:
+                if seg:
+                    if len(staged_ids) > 0:
+                        delay_ms += self.service.typing_delay_milliseconds(seg)
+                        send_at = typing_started + timedelta(milliseconds=delay_ms)
+                    else:
+                        send_at = typing_started
+                    sid = await self.service.stage_outbound_message(
+                        story.id, "", seg, send_at,
+                        intent_type="outbound-group-message",
+                        extra_payload={"groupId": turn.group_id,
+                                       "channelId": turn.channel_id},
+                    )
+                    staged_ids.append(sid)
+            if len(staged_ids) > 1:
+                for i, sid in enumerate(staged_ids[1:], 1):
+                    # Schedule wake for subsequent segments.
+                    seg_time = parse_date(
+                        [first, *later][i] and iso(typing_started)
+                    ) or typing_started
         await self.db.update("interlude_story", {"id": story.id}, {
             "cursor_at": iso(outcome["effective_now"]),
             "updated_at": iso(datetime.now(timezone.utc)),
@@ -682,7 +707,7 @@ class HdsiInterludePlugin(Star):
         await self.service.schedule_conversation_follow_ups_after_turn(
             story.id, outcome["effective_now"], None,
         )
-        return {"content": content, "delivery_intent_id": delivery_intent_id}
+        return {"staged_ids": staged_ids}
 
     async def _send_group(self, story: InterludeStory, channel_id: str, content: str) -> bool:
         assert self.service is not None
