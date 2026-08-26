@@ -133,6 +133,15 @@ details summary:hover{color:var(--accent)}
 <div class="toast" id="toast"></div>
 
 <script>
+// Load bridge SDK; if unavailable (standalone preview), fall back gracefully.
+(function() {
+  var s = document.createElement("script");
+  s.src = "/api/v1/plugins/page-bridge-sdk.js";
+  s.onerror = function() { console.warn("[hdsi] bridge sdk not loaded, using direct fetch"); };
+  document.head.appendChild(s);
+})();
+</script>
+<script>
 "use strict";
 const PLUGIN = "astrbot_plugin_hdsi";
 
@@ -161,6 +170,13 @@ async function apiPost(endpoint, body = {}) {
 }
 
 function esc(v) { return v == null ? "" : String(v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
+function cell(v) { if (v && typeof v === "object" && typeof v.html === "string") return v.html; return esc(v); }
+function table(headers, rows) {
+  if (!rows || !rows.length) return '<span class="muted">暂无数据</span>';
+  return `<table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead><tr>${headers.map(h => `<th style="text-align:left;padding:6px 8px;color:var(--sub);font-weight:500;border-bottom:1px solid var(--border);font-size:12px">${esc(h)}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map(r => `<tr>${r.map(c => `<td style="padding:6px 8px;border-bottom:1px solid #f0f0f0">${cell(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+}
 function fmtTime(t) { if (!t) return "-"; try { return String(t).replace("T", " ").slice(0, 19); } catch { return t; } }
 function toast(msg, err) { const el = document.getElementById("toast"); el.textContent = msg; el.classList.add("show"); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove("show"), 3000); }
 
@@ -410,9 +426,19 @@ async function updateBannerAndSteps() {
 
 (async function boot() {
   document.querySelectorAll(".tab")[0].classList.add("active");
-  if (window.AstrBotPluginPage?.ready) { try { await window.AstrBotPluginPage.ready(); } catch {} }
-  await updateBannerAndSteps();
-  renderView("status");
+  // Wait up to 2s for bridge to become available (postMessage handshake).
+  for (var i = 0; i < 20; i++) {
+    if (window.AstrBotPluginPage?.apiGet) break;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  try { await updateBannerAndSteps(); } catch(e) {
+    console.warn("[hdsi] initial status failed:", e);
+  }
+  try { renderView("status"); } catch(e) {
+    document.getElementById("view").innerHTML =
+      '<div class="card"><p style="color:var(--err)">加载失败：' + esc(e.message) +
+      '</p><p class="muted">请确认已登录 AstrBot 仪表板，且插件已启用。</p></div>';
+  }
 })();
 </script>
 </body>
