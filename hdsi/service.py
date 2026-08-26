@@ -930,7 +930,7 @@ def normalize_account_id(value: Any) -> str:
     normalized = str(value or "").strip().lower()
     for _ in range(3):
         stripped = normalized
-        for prefix in ("private:", "user:", "onebot:", "napcat:", "qq:"):
+        for prefix in ("private:", "user:", "onebot:", "napcat:", "qq:", "webchat:"):
             if stripped.startswith(prefix):
                 stripped = stripped[len(prefix):].strip()
         if stripped == normalized:
