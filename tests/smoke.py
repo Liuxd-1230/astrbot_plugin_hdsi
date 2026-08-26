@@ -81,7 +81,7 @@ async def main() -> None:
         print("participant state updated")
 
         await service.stop_background_tasks()
-        await service.invalidate_buffered_narratives()
+        service.invalidate_buffered_narratives()
         await db.close()
     print("SMOKE OK")
 

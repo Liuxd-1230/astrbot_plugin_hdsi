@@ -347,6 +347,44 @@ def compact_prompt_records(records: list[dict[str, Any]], character_budget: int)
     return selected
 
 
+def select_continuity_snapshot(state, participant):
+    """Privacy-scoped continuity view (P0-5).
+
+    - Unattended/global contexts see only the GLOBAL snapshot, which by
+      construction is refreshed exclusively from unattended life turns and
+      can never contain a private branch's summary.
+    - A participant turn sees global + that participant's OWN private
+      snapshot merged. Another participant's private continuity is never
+      included.
+    """
+    from .types import ContinuitySnapshot
+
+    global_snap = state.continuity_snapshot
+    if participant is None:
+        return global_snap
+    own = (state.participant_continuity or {}).get(participant.id)
+    if own is None:
+        return global_snap
+    if global_snap is None:
+        return own
+
+    def union(primary: list[str], secondary: list[str], cap: int) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in [*primary, *secondary]:
+            if item and item not in seen:
+                seen.add(item)
+                out.append(item)
+        return out[:cap]
+
+    return ContinuitySnapshot(
+        current=own.current or global_snap.current,
+        next=union(own.next, global_snap.next, 3),
+        recent=union(own.recent, global_snap.recent, 5),
+        salient=union(own.salient, global_snap.salient, 5),
+    )
+
+
 def build_prompt_payload(
     request: NarrativeRequest,
     max_script_characters: int = 12_000,
@@ -447,7 +485,9 @@ def build_prompt_payload(
         },
         "setting": setting,
         "state": _story_state_for_payload(story.state),
-        "continuitySnapshot": _snapshot_to_payload(story.state.continuity_snapshot),
+        "continuitySnapshot": _snapshot_to_payload(
+            select_continuity_snapshot(story.state, request.participant)
+        ),
         "continuitySnapshotAgeMinutes": (
             max(0, round((request.now - continuity_updated_at).total_seconds() / 60))
             if continuity_updated_at else None

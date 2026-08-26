@@ -80,6 +80,10 @@ MINUTE = 60.0
 HOUR = 3600.0
 DAY = 86400.0
 
+# Intent types that represent already-decided transport work: they are
+# delivered directly (send → finalize) and never open a new narrative turn.
+TRANSPORT_INTENT_TYPES = ("split-message", "outbound-message")
+
 
 # ------------------------------------------------------------------ events
 
@@ -97,6 +101,7 @@ class IncomingEvent:
     content: str = ""
     image_sources: list[str] = field(default_factory=list)
     is_mention: bool = False
+    is_admin: bool = False
     message_id: str = ""
 
 
@@ -121,6 +126,7 @@ class InterludeService:
         group_sender: Optional[GroupSenderFn] = None,
         now_fn: Callable[[], datetime] = default_now,
         browser_fetch: Optional[Callable[..., Awaitable[tuple[str, str]]]] = None,
+        image_loader: Optional[Callable[[str], Awaitable[tuple[str, str]]]] = None,
     ) -> None:
         self.db = db
         self.config = config
@@ -129,7 +135,11 @@ class InterludeService:
         self.sender = sender
         self.group_sender = group_sender
         self.now_fn = now_fn
+        # Web pages and images are DIFFERENT adapters (P1): the web fetcher
+        # returns (title, visible_text) for HTML pages; the image loader
+        # returns (mime_type, data_uri) for picture sources.
         self.browser_fetch = browser_fetch
+        self.image_loader = image_loader
 
         self.queues = SerialQueues()
         self.write_queue_lock = asyncio.Lock()
@@ -231,7 +241,10 @@ class InterludeService:
             return False
         managers = [m.strip() for m in self.config.shared_story.manager_ids if m.strip()]
         if not managers:
-            return True
+            # Least-privilege default (P1): an empty manager list means ONLY
+            # platform administrators may run destructive commands; being in
+            # the story whitelist alone never grants story-root powers.
+            return bool(getattr(event, "is_admin", False))
         return any(normalize_account_id(m) == normalize_account_id(event.sender_id) for m in managers)
 
     def can_handle_participant(self, participant: InterludeParticipant) -> bool:
@@ -266,11 +279,14 @@ class InterludeService:
     ) -> Optional[InterludeStory]:
         """One canonical story per bot identity.
 
-        The original Koishi build enforced a single global active story per
-        process; AstrBot routinely serves several bot identities from one
-        instance, so the canonical guard is scoped to (platform, selfId).
-        Stories belonging to other identities are never archived here.
+        The archiving guard ONLY runs when an identity scope
+        (platform_id + self_id) is provided: it then keeps one active story
+        for that identity and archives that identity's other active rows.
+        An unscoped call is non-destructive — it returns the most recently
+        updated active story without ever touching other identities' stories
+        (P0-4).
         """
+        scoped = bool(platform_id and self_id)
         query: dict[str, Any] = {"status": "active"}
         if platform_id:
             query["platform_id"] = platform_id
@@ -294,6 +310,9 @@ class InterludeService:
         for story in stories:
             if story.id == canonical.id:
                 continue
+            if not scoped:
+                # Never archive outside an explicit identity scope.
+                break
             await self.update_row("interlude_story", {"id": story.id}, {
                 "status": "archived", "updated_at": iso(now),
             })
@@ -303,6 +322,14 @@ class InterludeService:
                 canonical.id, story.id, canonical.platform_id, canonical.self_id,
             )
         return canonical
+
+    async def latest_active_story(self) -> Optional[InterludeStory]:
+        """Non-destructive view helper: most recent active story overall."""
+        rows = await self.db.get(
+            "interlude_story", {"status": "active"},
+            order_by="updated_at", descending=True, limit=1,
+        )
+        return InterludeStory.model_validate(rows[0]) if rows else None
 
     def story_id_for(self, event: IncomingEvent) -> str:
         return f"character:{event.platform_id}:{event.self_id}"
@@ -667,13 +694,9 @@ class InterludeService:
             "metadata": draft.metadata if isinstance(draft.metadata, dict) else {},
             "created_at": iso(now),
         }
-        inserted = await self.db.insert("interlude_script_entry", row)
-        cursor = await self.db.fetch_one(
-            "SELECT last_insert_rowid() AS id"
-        ) if False else None
-        # fetch generated id
-        fetched = await self.db.fetch_one("SELECT last_insert_rowid() AS last_id")
-        entry_id = int(fetched["last_id"]) if fetched else 0
+        # INSERT + rowid are one write-queue task: concurrent stories can
+        # never observe each other's generated ids.
+        entry_id = await self.db.insert_returning_id("interlude_script_entry", row)
         created = await self.db.get("interlude_script_entry", {"id": entry_id})
         return ScriptEntry.model_validate(created[0])
 
@@ -1035,7 +1058,13 @@ def _invalidate_turn(turn: BufferedNarrativeTurn) -> None:
         turn.obsolete_request_ids.add(turn.in_flight_request_id)
 
 
-async def _service_invalidate_buffered(self: "InterludeService", story_id: Optional[str] = None) -> None:
+def _service_invalidate_buffered(self: "InterludeService", story_id: Optional[str] = None) -> None:
+    """Synchronously invalidate buffered turns and wake timers.
+
+    Deliberately a plain function (no awaits): administrators calling
+    clear/purge must invalidate in the SAME event-loop step, and every
+    call site runs it un-awaited on purpose.
+    """
     for key in list(self.buffered_turns):
         turn = self.buffered_turns[key]
         if story_id and turn.story_id != story_id:
@@ -1046,7 +1075,6 @@ async def _service_invalidate_buffered(self: "InterludeService", story_id: Optio
         turn = self.buffered_group_turns[key]
         if story_id and turn.story_id != story_id:
             continue
-            _cancel_timer(turn.timer_task)
         _cancel_timer(turn.timer_task)
         self.buffered_group_turns.pop(key, None)
     for key in list(self.due_wake_tasks):
@@ -1212,7 +1240,14 @@ async def _flush_buffered_narrative(self: "InterludeService", key: str, revision
             return
         messages: list[OutgoingMessageDraft] = result["messages"]
         if self.can_handle_participant(participant):
+            # First-reply commit boundary = the moment transport begins.
+            # A sent bubble can never be retracted by later input; anything
+            # still staged will be cancelled instead of delivered.
+            if any(m.delivery_intent_id for m in messages):
+                turn.first_message_committed_request_id = request_id
             await self.send_outgoing_messages(story, messages, current=participant)
+        else:
+            await self.cancel_undelivered_messages(story, messages, self.now())
         self.schedule_compaction(turn.story_id)
     except Exception as error:  # noqa: BLE001
         self.report_standalone("warn", "合并写作任务失败：参与者=%s 错误=%s", turn.participant_id, error)
@@ -1299,15 +1334,6 @@ async def _persist_user_turn(
         await self.persist_collected_web_observation(observation)
     raw_interaction = decision.get("interaction") if isinstance(decision, dict) else None
     raw_reply = raw_interaction.get("reply") if isinstance(raw_interaction, dict) else {}
-    commits_first_reply = bool(
-        succeeded
-        and isinstance(raw_reply, dict)
-        and raw_reply.get("mode") == "immediate"
-        and isinstance(raw_reply.get("content"), str)
-        and raw_reply["content"].strip()
-    )
-    if commits_first_reply:
-        turn.first_message_committed_request_id = request_id
     messages = await self.persist_decision(
         current, current_participant, decision, from_time, effective_now,
         permit_messages=True, phase=NarrativePhase.USER_MESSAGE.value,
@@ -1342,12 +1368,12 @@ async def _load_native_images(self: "InterludeService", sources: list[str]) -> l
     """Convert stored image sources into data URIs via the injected loader."""
     from .types import NarrativeImage
 
-    if not self.config.models.vision_enabled or not sources or self.browser_fetch is None:
+    if not self.config.models.vision_enabled or not sources or self.image_loader is None:
         return []
     images: list[NarrativeImage] = []
     for index, source in enumerate(sources[:3]):
         try:
-            result = await self.browser_fetch(source)
+            result = await self.image_loader(source)
             if result is None:
                 continue
             mime_type, data_uri = result
@@ -1830,8 +1856,18 @@ async def _persist_decision(
         next_count = max(0, int(state.narrative_update_count or 0)) + 1
         next_state = state.model_copy(update={"narrative_update_count": next_count})
         if decision.continuity is not None:
-            next_state.continuity_snapshot = decision.continuity
-            next_state.last_continuity_update_at = iso(now)
+            # P0-5 privacy boundary: participant-scoped refreshes write ONLY
+            # that branch's private continuity; the GLOBAL snapshot is
+            # refreshed exclusively by unattended life turns, so raw private
+            # conversation can never reach another participant's prompt.
+            if phase != "advance" and participant is not None:
+                pc = dict(next_state.participant_continuity or {})
+                pc[participant.id] = decision.continuity
+                next_state.participant_continuity = pc
+                next_state.last_continuity_update_at = iso(now)
+            else:
+                next_state.continuity_snapshot = decision.continuity
+                next_state.last_continuity_update_at = iso(now)
         alter_turn = self._update_alter_system(story, state.alter_system, decision.alter, phase, now)
         next_state.alter_system = alter_turn.state if alter_turn is not None else state.alter_system
 
@@ -1986,15 +2022,16 @@ async def _persist_decision(
         if not first:
             continue
         message.content = first
-        await self.append_entry(story.id, ScriptEntryDraft(
-            kind="character-message", actor="character", content=first,
-            occurred_at=iso(now),
-            metadata={"visible": True,
-                      "interaction": interaction.model_dump() if interaction else None},
-        ), now, message.participant_id)
-        target = await self.get_participant(message.participant_id)
-        if target is not None:
-            await self.record_character_message(target, now)
+        # P0-1 delivery boundary: stage the message as a pending outbound
+        # intent. The visible character-message ScriptEntry and
+        # lastCharacterMessageAt are written ONLY after the transport layer
+        # confirms real delivery (finalize); on failure the staging intent is
+        # cancelled and nothing was "said".
+        message.delivery_intent_id = await self.stage_outbound_message(
+            story.id, message.participant_id, first, now,
+            interaction=interaction.model_dump() if interaction else None,
+            user_initiated=phase == "user-message",
+        )
         typing_started_at = self.now()
         delay_ms = 0.0
         for segment in later:
@@ -2012,6 +2049,94 @@ async def _persist_decision(
             }, typing_started_at, message.participant_id)
             self.schedule_due_intent_wake(story.id, send_at)
     return messages
+
+
+async def _stage_outbound_message(
+    self: "InterludeService",
+    story_id: str,
+    participant_id: str,
+    content: str,
+    now: datetime,
+    interaction: Optional[dict[str, Any]] = None,
+    user_initiated: bool = False,
+) -> int:
+    """Persist one pending-delivery marker; returns its intent id."""
+    return await self.db.insert_returning_id("interlude_intent", {
+        "story_id": story_id,
+        "participant_id": participant_id,
+        "type": "outbound-message",
+        "summary": "The character composed a message that is being delivered.",
+        "not_before": iso(now),
+        "status": "pending",
+        "payload": {
+            "content": content,
+            "visibleMessage": True,
+            "userInitiated": user_initiated,
+            "interaction": interaction,
+        },
+        "created_at": iso(now),
+        "updated_at": iso(now),
+    })
+
+
+async def _finalize_delivered_message(
+    self: "InterludeService",
+    story: InterludeStory,
+    participant: InterludeParticipant,
+    content: str,
+    delivery_intent_id: Optional[int],
+    now: datetime,
+) -> None:
+    """Transport succeeded: only now does the message become a spoken fact."""
+    metadata: dict[str, Any] = {"visible": True}
+    if delivery_intent_id:
+        metadata["deliveryIntentId"] = delivery_intent_id
+    await self.append_entry(story.id, ScriptEntryDraft(
+        kind="character-message", actor="character", content=content,
+        occurred_at=iso(now), metadata=metadata,
+    ), now, participant.id)
+    await self.record_character_message(participant, now)
+    if delivery_intent_id:
+        await self.db.update("interlude_intent", {"id": delivery_intent_id},
+                             {"status": "completed", "updated_at": iso(now)})
+
+
+async def _cancel_undelivered_messages(self: "InterludeService", story: InterludeStory, messages: list[OutgoingMessageDraft], now: datetime) -> None:
+    """Transport failed or was superseded: the world never heard these words."""
+    ids = [m.delivery_intent_id for m in messages if m.delivery_intent_id]
+    if not ids:
+        return
+    await self.db.execute_many([
+        ("UPDATE interlude_intent SET status='cancelled', updated_at=? WHERE id=? AND status='pending'",
+         (iso(now), intent_id)) for intent_id in ids
+    ])
+
+
+async def _finalize_group_delivered(
+    self: "InterludeService",
+    story: InterludeStory,
+    group_id: str,
+    channel_id: str,
+    content: str,
+    delivery_intent_id: Optional[int],
+    now: datetime,
+) -> None:
+    """Group transport succeeded: write the spoken fact."""
+    await self.append_entry(story.id, ScriptEntryDraft(
+        kind="character-group-message", actor="character", content=content,
+        occurred_at=iso(now),
+        metadata={"groupId": group_id, "channelId": channel_id,
+                  "deliveryIntentId": delivery_intent_id},
+    ), now)
+    if delivery_intent_id:
+        await self.db.update("interlude_intent", {"id": delivery_intent_id},
+                             {"status": "completed", "updated_at": iso(now)})
+
+
+InterludeService.stage_outbound_message = _stage_outbound_message  # type: ignore[attr-defined]
+InterludeService.finalize_group_delivered = _finalize_group_delivered  # type: ignore[attr-defined]
+InterludeService.finalize_delivered_message = _finalize_delivered_message  # type: ignore[attr-defined]
+InterludeService.cancel_undelivered_messages = _cancel_undelivered_messages  # type: ignore[attr-defined]
 
 
 def _agency_config(self: "InterludeService") -> AgencyConfig:
@@ -2266,7 +2391,7 @@ def _schedule_due_intent_wake(self: "InterludeService", story_id: str, not_befor
             if self.database_resetting:
                 return
             due = await self.due_intents(story_id, self.now())
-            if due and all(intent.type == "split-message" for intent in due):
+            if due and all(intent.type in TRANSPORT_INTENT_TYPES for intent in due):
                 await self.deliver_due_split_segments(story_id)
                 return
             if self.sweep_running or self.has_pending_narrative(story_id):
@@ -2307,7 +2432,8 @@ InterludeService.schedule_due_intent_wake = _schedule_due_intent_wake  # type: i
 async def _schedule_next_split_wake(self: "InterludeService", story_id: str) -> None:
     rows = await self.db.get(
         "interlude_intent",
-        {"story_id": story_id, "status": "pending", "type": "split-message"},
+        {"story_id": story_id, "status": "pending",
+         "type": list(TRANSPORT_INTENT_TYPES)},
         order_by="not_before", limit=1,
     )
     if rows:
@@ -2331,7 +2457,8 @@ async def _deliver_due_split_segments_locked(self: "InterludeService", story_id:
     now = self.now()
     rows = await self.db.get(
         "interlude_intent",
-        {"story_id": story_id, "status": "pending", "type": "split-message",
+        {"story_id": story_id, "status": "pending",
+         "type": list(TRANSPORT_INTENT_TYPES),
          "not_before": {"$lte": now}},
         order_by="not_before", limit=20,
     )
@@ -2406,7 +2533,7 @@ async def _cancel_pending_outgoing_messages(
         matching = [
             i for i in intents
             if i.participant_id == participant_id and (
-                i.type == "split-message"
+                i.type in ("split-message", "outbound-message")
                 or (cancel_planned and i.type in ("delayed-reply", "cross-conversation-message"))
             )
         ]
@@ -2424,7 +2551,7 @@ async def _cancel_pending_outgoing_messages(
         await self.schedule_next_split_wake(story_id)
         interrupted_drafts = []
         for intent in matching:
-            if intent.type == "split-message":
+            if intent.type in ("split-message", "outbound-message"):
                 content = intent.payload.get("content")
                 clipped = clip(content, self.config.runtime.max_message_characters) \
                     if isinstance(content, str) else ""
@@ -2523,6 +2650,7 @@ async def _send_outgoing_messages(
         if should_cancel is not None and should_cancel(target):
             self.report_operation("standard", "info", story, "user-message",
                                   "新消息打断主角输入，停止发送后续分段 参与者=%s", target.id)
+            await self.cancel_undelivered_messages(story, [message], self.now())
             continue
         try:
             self.report_operation("standard", "info", story, "intent-due",
@@ -2534,10 +2662,17 @@ async def _send_outgoing_messages(
             ok = await self.sender(story, target, message.content)
             if ok:
                 delivered.append(message)
+                # P0-1: only a confirmed transport makes the words "spoken".
+                await self.finalize_delivered_message(
+                    story, target, message.content,
+                    message.delivery_intent_id, self.now(),
+                )
             else:
+                await self.cancel_undelivered_messages(story, [message], self.now())
                 self.write_report("warn", story.setting.character.name, "intent-due",
                                   "消息投递失败：发送通道不可用 参与者=%s", (target.id,))
         except Exception as error:  # noqa: BLE001
+            await self.cancel_undelivered_messages(story, [message], self.now())
             self.write_report("warn", story.setting.character.name, "intent-due",
                               "消息投递失败 参与者=%s 错误=%s", (target.id, error))
     return delivered
@@ -2593,7 +2728,7 @@ async def _sweep_one(self: "InterludeService", story: InterludeStory) -> None:
         # event loop once, otherwise debounced turn tasks can starve on a
         # host whose only periodic driver is this sweep.
         pending_due = await self.due_intents(story.id, self.now())
-        delivery_only = bool(pending_due) and all(i.type == "split-message" for i in pending_due)
+        delivery_only = bool(pending_due) and all(i.type in TRANSPORT_INTENT_TYPES for i in pending_due)
         if not delivery_only:
             self.report_operation("diagnostic", "debug", story, "advance",
                                   "后台扫描跳过：前台消息回合或合并计时器仍在处理中")
@@ -2648,7 +2783,7 @@ async def _advance_unlocked(
     messages: list[OutgoingMessageDraft] = []
     # Later <sep/> bubbles are delivery events, at most one per wake-up.
     split_segments = sorted(
-        [i for i in due if i.type == "split-message"], key=lambda i: i.not_before
+        [i for i in due if i.type in TRANSPORT_INTENT_TYPES], key=lambda i: i.not_before
     )[:1]
     split_handled = False
     for intent in split_segments:
@@ -2689,7 +2824,7 @@ async def _advance_unlocked(
                              {"status": "completed", "updated_at": iso(now)})
     if split_handled:
         await self.schedule_next_split_wake(story.id)
-    due = [i for i in due if i.type != "split-message"]
+    due = [i for i in due if i.type not in TRANSPORT_INTENT_TYPES]
     # Browser research intents are executed here, bounded per sweep.
     browser_intents = [
         i for i in due if i.type == "browser-research"
@@ -3285,11 +3420,12 @@ async def _save_web_observation(
     )
     if not persist:
         return candidate
-    await self.db.insert("interlude_web_observation", {
+    observation_id = await self.db.insert_returning_id("interlude_web_observation", {
         key: value for key, value in candidate.model_dump(mode="json").items() if key != "id"
     })
     fetched = await self.db.fetch_one(
-        "SELECT * FROM interlude_web_observation ORDER BY id DESC LIMIT 1"
+        "SELECT * FROM interlude_web_observation WHERE id=?",
+        (observation_id,)
     )
     observation = WebObservation.model_validate(self.db.row_to_dict("interlude_web_observation", fetched)) \
         if fetched else candidate
@@ -3835,7 +3971,7 @@ async def _persist_state_patch(
     )
     proposal_id: Optional[int] = candidate.id if candidate is not None else None
     if candidate is None:
-        await self.db.insert("interlude_state_patch", {
+        proposal_id = await self.db.insert_returning_id("interlude_state_patch", {
             "story_id": story.id, "participant_id": participant_id,
             "target": target_value, "path": path, "proposed_value": proposed_value,
             "evidence": clip(merged_evidence_text, 4_000), "confidence": merged_confidence,
@@ -3843,10 +3979,6 @@ async def _persist_state_patch(
             "source_entry_ids": merged_source_ids, "created_at": iso(now),
             "applied_at": None,
         })
-        fetched = await self.db.fetch_one(
-            "SELECT * FROM interlude_state_patch ORDER BY id DESC LIMIT 1"
-        )
-        proposal_id = int(fetched["id"]) if fetched else None
     else:
         candidate_impact = (
             candidate.impact.value if hasattr(candidate.impact, "value") else str(candidate.impact)

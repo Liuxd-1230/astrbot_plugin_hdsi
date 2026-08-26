@@ -187,7 +187,8 @@ class Database:
     # ------------------------------------------------------------ raw SQL
 
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> None:
-        """Serialized write with retry."""
+        """Serialized write with retry. Any failure rolls the statement back
+        so a later unrelated commit cannot resurrect partial state."""
 
         async def task() -> None:
             if self.fail_all_writes:
@@ -196,17 +197,42 @@ class Database:
                 self.fail_transient_writes -= 1
                 raise RuntimeError("database is locked (injected transient)")
             conn = self.conn
-            await conn.execute(sql, params)
-            await conn.commit()
+            await conn.execute("BEGIN")
+            try:
+                await conn.execute(sql, params)
+                await conn.commit()
+            except BaseException:
+                try:
+                    await conn.rollback()
+                except Exception:  # noqa: BLE001 - rollback best-effort
+                    pass
+                raise
 
         await self._writes.submit(task, retryable=self._retryable)
 
     async def execute_many(self, statements: list[tuple[str, tuple[Any, ...]]]) -> None:
+        """Serialized all-or-nothing batch: explicit BEGIN + ROLLBACK so a
+        failure can never leave half-applied statements to be committed by a
+        later unrelated write (P0-2)."""
+
         async def task() -> None:
+            if self.fail_all_writes:
+                raise RuntimeError("disk I/O error (injected)")
+            if self.fail_transient_writes > 0:
+                self.fail_transient_writes -= 1
+                raise RuntimeError("database is locked (injected transient)")
             conn = self.conn
-            for sql, params in statements:
-                await conn.execute(sql, params)
-            await conn.commit()
+            await conn.execute("BEGIN")
+            try:
+                for sql, params in statements:
+                    await conn.execute(sql, params)
+                await conn.commit()
+            except BaseException:
+                try:
+                    await conn.rollback()
+                except Exception:  # noqa: BLE001 - rollback best-effort
+                    pass
+                raise
 
         await self._writes.submit(task, retryable=self._retryable)
 
@@ -273,6 +299,35 @@ class Database:
             list(payload.values()),
         )
         return data
+
+    async def insert_returning_id(self, table: str, data: dict[str, Any]) -> int:
+        """Insert one row and return its generated rowid.
+
+        The INSERT and the rowid read happen inside the SAME write-queue task,
+        so concurrent stories can never observe each other's generated ids
+        (P0-3). Callers that need the persisted row should use
+        ``get`` afterwards with the returned id.
+        """
+        payload = _prepare_row(table, data)
+        columns = ",".join(payload.keys())
+        marks = ",".join("?" for _ in payload)
+
+        async def task() -> int:
+            if self.fail_all_writes:
+                raise RuntimeError("disk I/O error (injected)")
+            if self.fail_transient_writes > 0:
+                self.fail_transient_writes -= 1
+                raise RuntimeError("database is locked (injected transient)")
+            conn = self.conn
+            cursor = await conn.execute(
+                f"INSERT INTO {table} ({columns}) VALUES ({marks})",
+                list(payload.values()),
+            )
+            rowid = int(cursor.lastrowid or 0)
+            await conn.commit()
+            return rowid
+
+        return await self._writes.submit(task, retryable=self._retryable)
 
     async def update(self, table: str, query: dict[str, Any], data: dict[str, Any]) -> int:
         rows = await self.get(table, query)

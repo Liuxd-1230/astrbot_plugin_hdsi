@@ -2,6 +2,44 @@
 
 ## v1.0.0（2026-08-26）
 
+### 独立审计修复（发布阻断项全数解决）
+
+- **P0-1 投递边界（Outbox）**：immediate 回复改为"staged outbound intent →
+  真实发送 → 成功才写入 character-message 与 lastCharacterMessageAt；
+  失败/打断取消 staged 且不产生已说出口条目"。群聊同路径修复。
+  首条回复 commit 边界移至传输开始时刻。重启后未完成的 outbound-message
+  按 split-message 同路径续投。
+- **P0-2 批量写事务**：execute_many 显式 BEGIN/COMMIT + 失败 ROLLBACK，
+  单条 execute 失败同样回滚；彻底消除"半途失败被后续无关提交诈尸"。
+  故障注入钩子覆盖批量与 insert_returning_id 路径。
+- **P0-3 生成 ID 竞争**：新增 insert_returning_id（INSERT+rowid 同一写队列任务），
+  append_entry / web_observation / state_patch 三处不再跨 Story 取错 ID。
+- **P0-4 canonical 归档作用域**：归档守卫仅在显式 (platform_id, self_id)
+  作用域内执行；无作用域调用非破坏性。启动恢复遍历全部活动故事；
+  WebUI 改用 latest_active_story 视图。
+- **P0-5 Continuity 隐私边界**：拆分 Global（仅由无人推进刷新，天然无私聊）
+  与 Participant 私有快照；participant 刷新只写本分支；prompt 经
+  select_continuity_snapshot 只合并 global+自身。隐私测试升级为整 payload 扫描。
+
+### P1/P2 修复
+
+- Vision 适配器拆分：image_loader（http/path/base64→data_uri，4MB 上界、
+  MIME 校验）与 browser_fetch 彻底分离；网页观察改手动逐跳重定向，
+  每跳复检 URL 安全并做 DNS 解析内网拦截（SSRF 缺口闭合）。
+- invalidate_buffered_narratives 改同步函数：clear/purge 同一事件循环步生效，
+  消除 coroutine never awaited 警告及其隐患。
+- 叙事调用透传 top_p/max_tokens，超时语义修正（0=交给 Provider 自身重试策略）；
+  inherit 解析三级回退（会话→全局默认→任一可用 Provider）。
+- JSON repair 真正接入 decide_raw：malformed 时携带修复指令重试一次再失败。
+- WebUI：table() 默认全转义（显式 {html} 才放行），Pending Intent 等 XSS 点
+  封死；表单保存经 reconcile 还原数组结构，Runtime 页可安全 round-trip。
+- 管理员默认收紧：manager_ids 为空时仅 AstrBot admin 可用危险命令。
+- 二次确认实现真正的 60 秒过期。
+- requirements 补齐 aiosqlite/httpx；metadata 版本纯 semver、
+  astrbot_version 下限收敛到实测的 >=4.27.0。
+- 模拟器 proactive 密度检查从硬编码 True 改为真实统计
+  （90 天 artifact: tests/artifacts/sim-90d.json，165 提议/3478 回合）。
+
 AstrBot 移植版首个完整版本。以 MomoiCore/HDS-Interlude `0.1.3-beta1`
 的行为与架构为唯一语义基准完成等价移植，未做 MVP 裁剪。
 

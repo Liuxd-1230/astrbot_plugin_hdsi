@@ -1,0 +1,36 @@
+{
+  "days": 90,
+  "sweeps": 25920,
+  "passed": true,
+  "checks": {
+    "fact_count_bounded": true,
+    "memory_rows_bounded": true,
+    "overlay_churn_bounded": true,
+    "independent_life": true,
+    "no_dialogue_stall": true,
+    "proactive_density_bounded": true,
+    "mixed_reply_modes": true,
+    "intents_eventually_complete": true,
+    "no_duplicate_delivery": true,
+    "cursor_advanced": true
+  },
+  "details": {
+    "facts": 0,
+    "memories": 60,
+    "applied_patches": 0,
+    "script_entries": 2767,
+    "top_duplicate_reply": {
+      "text": "回复#5：我在想",
+      "count": 1
+    },
+    "proactive_send_now_proposals": 165,
+    "deliveries_total": 183,
+    "visible_replies": 183,
+    "delayed_intents_seen": 82,
+    "pending_intents": 1,
+    "completed_intents": 321,
+    "intent_completion_rate": 1.0,
+    "sent_messages": 183
+  },
+  "narrator_turns": 3478
+}

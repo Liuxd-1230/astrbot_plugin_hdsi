@@ -74,11 +74,33 @@ class AstrBotNarrator:
         if binding.kind == "inherit":
             umo = _current_umo.get()
             try:
-                return await self.context.get_using_provider_async(umo=umo or None)
+                provider = await self.context.get_using_provider_async(umo=umo or None)
             except TypeError:
-                return await self.context.get_using_provider_async()
-        provider = self.context.get_provider_by_id(binding.provider_id)
-        return provider
+                provider = await self.context.get_using_provider_async()
+            except Exception:  # noqa: BLE001
+                provider = None
+            if provider is not None:
+                return provider
+            # Session-scoped lookup can be empty early after startup or for
+            # unrouted sessions; fall back to the global default, then to any
+            # enabled chat provider.
+            try:
+                provider = await self.context.get_using_provider_async()
+                if provider is not None:
+                    return provider
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                sync_get = getattr(self.context, "get_using_provider", None)
+                if sync_get is not None:
+                    provider = sync_get()
+                    if provider is not None:
+                        return provider
+            except Exception:  # noqa: BLE001
+                pass
+            candidates = self.context.get_all_providers() or []
+            return candidates[0] if candidates else None
+        return self.context.get_provider_by_id(binding.provider_id)
 
     async def _chat(
         self,
@@ -106,15 +128,29 @@ class AstrBotNarrator:
                     if provider is None:
                         raise RuntimeError(f"provider not found or not enabled: {binding.key}")
                     model_override = binding.model or None
-                    response = await provider.text_chat(
-                        prompt=user_content,
-                        session_id=None,
-                        image_urls=image_urls or None,
-                        contexts=None,
-                        system_prompt=system_prompt,
-                        model=model_override,
-                        **({"temperature": temperature} if temperature is not None else {}),
-                    )
+
+                    async def _call() -> Any:
+                        return await provider.text_chat(
+                            prompt=user_content,
+                            session_id=None,
+                            image_urls=image_urls or None,
+                            contexts=None,
+                            system_prompt=system_prompt,
+                            model=model_override,
+                            **({"temperature": temperature} if temperature is not None else {}),
+                            # Forwarded via **kwargs; OpenAI-compatible sources
+                            # merge them into the request payload.
+                            top_p=top_p,
+                            max_tokens=max_tokens or None,
+                        )
+
+                    # Honour an explicitly configured slot timeout; 0 means
+                    # defer entirely to the provider's own retry policy
+                    # (matching pre-adapter behaviour).
+                    if timeout_seconds and timeout_seconds > 0:
+                        response = await asyncio.wait_for(_call(), timeout=timeout_seconds)
+                    else:
+                        response = await _call()
                     text = extract_chat_text(_llm_response_text(response))
                     if not text.strip():
                         raise RuntimeError("provider returned an empty response")
@@ -137,20 +173,31 @@ class AstrBotNarrator:
                          response_json: bool, max_repairs: int = 1):
         from .hdsi.prompt_builder import build_prompt_payload
 
+        from .hdsi.json_repair import REPAIR_INSTRUCTION
+
         payload = json.dumps(build_prompt_payload(request), ensure_ascii=False)
         image_urls = None
         if request.images and request.phase.value == "user-message":
             image_urls = [image.data_uri for image in request.images]
-        text = await self._chat(
-            self.main_router, self.slots.main_model,
-            system_prompt=system_prompt, user_content=payload,
-            image_urls=image_urls,
-            temperature=temperature, top_p=top_p,
-            max_tokens=max_tokens, timeout_seconds=timeout_seconds,
-            response_json=response_json,
-        )
-        raw = extract_json_object(text, "Narrative provider")
-        return raw, []
+        last_error: Exception | None = None
+        for attempt in range(1 + max(0, max_repairs)):
+            user_content = payload if attempt == 0 else payload + REPAIR_INSTRUCTION
+            text = await self._chat(
+                self.main_router, self.slots.main_model,
+                system_prompt=system_prompt, user_content=user_content,
+                image_urls=image_urls,
+                temperature=temperature, top_p=top_p,
+                max_tokens=max_tokens, timeout_seconds=timeout_seconds,
+                response_json=response_json,
+            )
+            try:
+                raw = extract_json_object(text, "Narrative provider")
+                return raw, []
+            except ValueError as error:
+                last_error = error
+                logger.warning("[hdsi] 主叙事返回非法 JSON（第 %d 次），尝试修复重试",
+                               attempt + 1)
+        raise last_error if last_error else RuntimeError("empty narrative response")
 
     async def compact_raw(self, *, payload: dict[str, Any], system_prompt: str,
                           temperature: float, top_p: float, max_tokens: int,
@@ -262,6 +309,7 @@ class HdsiInterludePlugin(Star):
             group_sender=self._send_to_group,
             now_fn=lambda: datetime.now(timezone.utc),
             browser_fetch=self._browser_fetch,
+            image_loader=self._image_loader,
         )
         # Routes must be registered under the plugin-name prefix so the
         # dashboard page-bridge path /api/v1/plugins/extensions/<plugin>/<route>
@@ -284,7 +332,7 @@ class HdsiInterludePlugin(Star):
     async def terminate(self) -> None:
         if self.service is not None:
             await self.service.stop_background_tasks()
-            await self.service.invalidate_buffered_narratives()
+            self.service.invalidate_buffered_narratives()
         if self.db is not None:
             await self.db.close()
         logger.info("[hdsi] HDS Interlude 已卸载")
@@ -316,32 +364,35 @@ class HdsiInterludePlugin(Star):
             save_config_file(self.config_path, self.hdsi_config)
 
     async def _recover_pending_tasks(self) -> None:
-        """Restart-safety: re-arm wakes for persisted pending intents."""
+        """Restart-safety: re-arm wakes for persisted pending intents of
+        EVERY active story (multi-bot safe, P0-4)."""
         assert self.service is not None
-        story = await self.service.get_canonical_story()
-        if story is None:
-            return
-        rows = await self.db.get(
-            "interlude_intent", {"story_id": story.id, "status": "pending"},
-            order_by="not_before",
-        )
+        stories = await self.service.active_stories()
         now = datetime.now(timezone.utc)
-        wake_types = {"split-message", "delayed-reply", "proactive-check",
-                      "narrative-retry", "cross-conversation-message"}
-        count = 0
-        for row in rows:
-            intent = NarrativeIntent.model_validate(row)
-            if intent.type not in wake_types:
-                continue
-            when = intent.not_before if intent.not_before > now else now + timedelta(seconds=2)
-            self.service.schedule_due_intent_wake(story.id, when)
-            count += 1
-        automation = story.state.automation
-        next_advance = parse_date(automation.next_advance_at)
-        if next_advance is not None:
-            self.service.schedule_due_intent_wake(story.id, max(next_advance, now))
-        if count:
-            logger.info("[hdsi] 重启恢复：%d 个待处理任务已重新调度", count)
+        wake_types = {"split-message", "outbound-message", "delayed-reply",
+                      "proactive-check", "narrative-retry",
+                      "cross-conversation-message"}
+        total = 0
+        for story in stories:
+            rows = await self.db.get(
+                "interlude_intent", {"story_id": story.id, "status": "pending"},
+                order_by="not_before",
+            )
+            count = 0
+            for row in rows:
+                intent = NarrativeIntent.model_validate(row)
+                if intent.type not in wake_types:
+                    continue
+                when = intent.not_before if intent.not_before > now else now + timedelta(seconds=2)
+                self.service.schedule_due_intent_wake(story.id, when)
+                count += 1
+            next_advance = parse_date(story.state.automation.next_advance_at)
+            if next_advance is not None:
+                self.service.schedule_due_intent_wake(story.id, max(next_advance, now))
+            total += count
+        if total:
+            logger.info("[hdsi] 重启恢复：%d 个待处理任务已重新调度（%d 个故事）",
+                        total, len(stories))
 
     # ------------------------------------------------------------ event intake
 
@@ -415,6 +466,7 @@ class HdsiInterludePlugin(Star):
                 content=content,
                 image_sources=image_sources[:3],
                 is_mention=is_mention,
+                is_admin=bool(event.is_admin()),
                 message_id=event.message_obj.message_id if event.message_obj else "",
             )
         except Exception as error:  # noqa: BLE001
@@ -517,7 +569,21 @@ class HdsiInterludePlugin(Star):
                 turn, snapshot, outcome,
             ))
             if result["content"]:
-                await self._send_group(story, turn.channel_id, result["content"])
+                # P0-1 outbox: entry is written only after real transport.
+                sent = await self._send_group(story, turn.channel_id, result["content"])
+                if sent:
+                    await service.queues.run(story.id, lambda: service.finalize_group_delivered(
+                        story, turn.group_id, turn.channel_id,
+                        result["content"], result.get("delivery_intent_id"),
+                        datetime.now(timezone.utc),
+                    ))
+                else:
+                    await service.cancel_undelivered_messages(story, [], datetime.now(timezone.utc))
+                    await self.db.execute(
+                        "UPDATE interlude_intent SET status='cancelled', updated_at=? "
+                        "WHERE id=? AND status='pending'",
+                        (iso(datetime.now(timezone.utc)), result.get("delivery_intent_id") or 0),
+                    )
             service.schedule_compaction(story.id)
         except Exception as error:  # noqa: BLE001
             logger.warning("[hdsi] 群聊主叙事失败：群=%s 错误=%s", turn.group_id, error)
@@ -594,14 +660,13 @@ class HdsiInterludePlugin(Star):
             permit_messages=False, phase="user-message",
         )
         content = normalize_group_reply_local(decision_raw, self.hdsi_config.runtime.max_message_characters)
+        delivery_intent_id: int | None = None
         if content:
-            from .hdsi.types import ScriptEntryDraft
-
-            await self.service.append_entry(story.id, ScriptEntryDraft(
-                kind="character-group-message", actor="character", content=content,
-                occurred_at=iso(outcome["effective_now"]),
-                metadata={"groupId": turn.group_id, "channelId": turn.channel_id},
-            ), outcome["effective_now"])
+            # Stage only (P0-1): the visible group entry is written after
+            # transport succeeds.
+            delivery_intent_id = await self.service.stage_outbound_message(
+                story.id, "", content, outcome["effective_now"],
+            )
         await self.db.update("interlude_story", {"id": story.id}, {
             "cursor_at": iso(outcome["effective_now"]),
             "updated_at": iso(datetime.now(timezone.utc)),
@@ -609,21 +674,25 @@ class HdsiInterludePlugin(Star):
         await self.service.schedule_conversation_follow_ups_after_turn(
             story.id, outcome["effective_now"], None,
         )
-        return {"content": content}
+        return {"content": content, "delivery_intent_id": delivery_intent_id}
 
-    async def _send_group(self, story: InterludeStory, channel_id: str, content: str) -> None:
+    async def _send_group(self, story: InterludeStory, channel_id: str, content: str) -> bool:
         assert self.service is not None
         session = self._session_for_story_group(story, channel_id)
         if session is None:
             logger.warning("[hdsi] 没有可用平台投递群消息 群=%s", channel_id)
-            return
+            return False
         first, later = self.service.split_outgoing_message(content)
         parts = [first, *later]
         try:
             for part in parts:
-                await self.context.send_message(session, MessageChain().message(part))
+                ok = await self.context.send_message(session, MessageChain().message(part))
+                if not ok:
+                    return False
+            return True
         except Exception as error:  # noqa: BLE001
             logger.warning("[hdsi] 群消息投递失败 群=%s 错误=%s", channel_id, error)
+            return False
 
     def _session_for_story_group(self, story: InterludeStory, group_id: str):
         try:
@@ -650,30 +719,103 @@ class HdsiInterludePlugin(Star):
             return False
 
     async def _send_to_group(self, story: InterludeStory, group_channel: str, content: str) -> bool:
-        await self._send_group(story, group_channel, content)
-        return True
+        return await self._send_group(story, group_channel, content)
 
     async def _browser_fetch(self, url: str, timeout_ms: int = 15_000) -> tuple[str, str]:
-        """Bounded read-only public page fetch returning (title, visible text)."""
+        """Bounded read-only public page fetch returning (title, visible text).
+
+        SSRF-safe (P1): redirects are followed MANUALLY; every hop's URL and
+        all resolved IPs are re-validated before the next request.
+        """
         timeout_seconds = max(1.0, timeout_ms / 1000.0)
         headers = {
             "User-Agent": "Mozilla/5.0 (compatible; HDSI-AstrBot/1.0; +https://github.com/MomoiCore)",
         }
+        blocked = self.hdsi_config.browser.blocked_domains
+        allowed = self.hdsi_config.browser.allowed_domains
+        current = url
+        max_hops = 5
         async with httpx.AsyncClient(
-            follow_redirects=True, timeout=timeout_seconds, headers=headers,
+            follow_redirects=False, timeout=timeout_seconds, headers=headers,
         ) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            content_type = response.headers.get("content-type", "")
-            if "html" not in content_type and "text" not in content_type and content_type:
-                raise RuntimeError(f"unsupported content-type: {content_type}")
-            body = response.text[:2_000_000]
-        title_match = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
-        title = ""
-        if title_match:
-            title = strip_html(title_match.group(1)).strip()
-        text = extract_visible_text(body)
-        return title, text
+            for _hop in range(max_hops):
+                if not agency_mod.is_safe_public_web_url(current, blocked, allowed):
+                    raise RuntimeError(f"重定向目标未通过公开网页安全校验：{current}")
+                await _assert_public_dns(current)
+                response = await client.get(current, headers=headers)
+                if response.is_redirect:
+                    location = response.headers.get("location", "")
+                    if not location:
+                        break
+                    from urllib.parse import urljoin
+
+                    current = urljoin(current, location.strip())
+                    continue
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+                if "html" not in content_type and "text" not in content_type and content_type:
+                    raise RuntimeError(f"unsupported content-type: {content_type}")
+                body = response.text[:2_000_000]
+                title_match = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
+                title = ""
+                if title_match:
+                    title = strip_html(title_match.group(1)).strip()
+                return title, extract_visible_text(body)
+        raise RuntimeError("重定向次数超出限制")
+
+    async def _image_loader(self, source: str) -> tuple[str, str]:
+        """Load one bounded picture source → (mime_type, data_uri).
+
+        Separate adapter from web pages (P1): accepts http(s) URLs, local
+        paths, base64:// and data: URIs; rejects anything over 4 MB or with a
+        non-image MIME.
+        """
+        import base64 as _base64
+        import pathlib
+
+        value = (source or "").strip()
+        raw: bytes | None = None
+        mime = ""
+        if value.startswith("data:image/"):
+            match = re.match(r"^data:(image/[a-z0-9.+-]+);base64,(.+)$", value, re.I | re.S)
+            if not match:
+                raise RuntimeError("invalid data URI")
+            return match.group(1).lower(), value
+        if value.startswith("base64://"):
+            raw = _base64.b64decode(value[len("base64://"):])
+        elif value.startswith("file://"):
+            raw = pathlib.Path(value[len("file://"):]).read_bytes()
+        elif re.match(r"^https?://", value, re.I):
+            if not agency_mod.is_safe_public_web_url(
+                value,
+                self.hdsi_config.browser.blocked_domains,
+                self.hdsi_config.browser.allowed_domains,
+            ):
+                # Vision sources come from the platform adapter, not the open
+                # web; still enforce non-private destinations.
+                raise RuntimeError("图片地址未通过安全校验")
+            async with httpx.AsyncClient(
+                follow_redirects=False,
+                timeout=max(1.0, self.hdsi_config.browser.navigation_timeout / 1000.0),
+                headers={"User-Agent": "Mozilla/5.0 (compatible; HDSI-AstrBot/1.0)"},
+            ) as client:
+                response = await client.get(value)
+                response.raise_for_status()
+                raw = response.content
+                mime = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+        else:
+            p = pathlib.Path(value)
+            if p.exists():
+                raw = p.read_bytes()
+        if not raw:
+            raise RuntimeError("empty image payload")
+        if len(raw) > 4 * 1024 * 1024:
+            raise RuntimeError("image exceeds 4MB bound")
+        if not mime or not mime.startswith("image/"):
+            mime = _guess_image_mime(raw)
+        if not mime.startswith("image/"):
+            raise RuntimeError(f"not an image: {mime or 'unknown'}")
+        return mime, f"data:{mime};base64,{_base64.b64encode(raw).decode()}"
 
     # ------------------------------------------------------------ confirmations
 
@@ -681,6 +823,11 @@ class HdsiInterludePlugin(Star):
         entry = self.pending_confirmations.pop(incoming.umo, None)
         if entry is None:
             return False
+        # Enforce the 60-second confirmation window (P1): stale entries are
+        # dropped instead of staying valid forever.
+        if datetime.now(timezone.utc) > entry[1]:
+            logger.info("[hdsi] 确认已超时，操作取消：%s", entry[0])
+            return True
         answer = incoming.content.strip().lower()
         action = entry[0]
         if answer in ("y", "yes", "是", "确认"):
@@ -688,7 +835,11 @@ class HdsiInterludePlugin(Star):
         return True
 
     def _ask_confirmation(self, umo: str, action: str) -> bool:
-        self.pending_confirmations[umo] = (action, datetime.now(timezone.utc) + timedelta(seconds=60))
+        now = datetime.now(timezone.utc)
+        # Drop other sessions' expired entries opportunistically.
+        for key in [k for k, v in self.pending_confirmations.items() if now > v[1]]:
+            self.pending_confirmations.pop(key, None)
+        self.pending_confirmations[umo] = (action, now + timedelta(seconds=60))
         return True
 
     async def _run_confirmed(self, action: str, incoming: IncomingEvent) -> None:
@@ -756,8 +907,8 @@ class HdsiInterludePlugin(Star):
             return None
 
     async def _api_migrate_config(self, body: Optional[dict] = None):
-        from hdsi.config import deep_merge
-        from hdsi.migration import migrate_koishi_config
+        from .hdsi.config import deep_merge
+        from .hdsi.migration import migrate_koishi_config
 
         incoming = body or (await self._request_json_body()) or {}
         koishi_config = incoming.get("koishi_config") if isinstance(incoming, dict) else None
@@ -777,7 +928,7 @@ class HdsiInterludePlugin(Star):
 
     async def _api_overview(self):
         service = await self._require_service()
-        story = await service.get_canonical_story()
+        story = await service.latest_active_story()
         if story is None:
             return {"status": "ok", "data": {"story": None}}
         intents_rows = await self.db.get(
@@ -862,7 +1013,7 @@ class HdsiInterludePlugin(Star):
 
     async def _api_participants(self):
         service = await self._require_service()
-        story = await service.get_canonical_story()
+        story = await service.latest_active_story()
         if story is None:
             return {"status": "ok", "data": []}
         participants = await service.participants(story.id, include_paused=True)
@@ -881,7 +1032,7 @@ class HdsiInterludePlugin(Star):
 
     async def _api_script(self, limit: int = 30, offset: int = 0):
         service = await self._require_service()
-        story = await service.get_canonical_story()
+        story = await service.latest_active_story()
         if story is None:
             return {"status": "ok", "data": []}
         rows = await self.db.fetch_all(
@@ -896,7 +1047,7 @@ class HdsiInterludePlugin(Star):
 
     async def _api_intents(self, include_completed: bool = False):
         service = await self._require_service()
-        story = await service.get_canonical_story()
+        story = await service.latest_active_story()
         if story is None:
             return {"status": "ok", "data": []}
         query: dict[str, Any] = {"story_id": story.id}
@@ -908,7 +1059,7 @@ class HdsiInterludePlugin(Star):
 
     async def _api_maintenance(self, action: str = "", arg: str = ""):
         service = await self._require_service()
-        story = await service.get_canonical_story()
+        story = await service.latest_active_story()
         if story is None:
             return {"status": "error", "message": "没有活动故事"}
         if action == "advance":
@@ -1021,7 +1172,7 @@ async def hdsi(self: "HdsiInterludePlugin", event: AstrMessageEvent):
     if self.service is None:
         yield event.plain_result("服务尚未初始化完成，请稍后再试。")
         return
-    story = await self.service.get_canonical_story()
+    story = await self.service.latest_active_story()
     if story is None:
         yield event.plain_result(
             "HDS Interlude 持续叙事运行时。\n"
@@ -1419,3 +1570,34 @@ async def hdsi_reset(self: "HdsiInterludePlugin", event: AstrMessageEvent):
         "即将删除所有平台的剧本、记忆、事实、意图和状态，并按当前配置重建空白 Canon。"
         "确认请回复 y，取消回复其他内容。"
     )
+
+
+def _guess_image_mime(raw: bytes) -> str:
+    if len(raw) >= 3 and raw[0] == 0xFF and raw[1] == 0xD8 and raw[2] == 0xFF:
+        return "image/jpeg"
+    if len(raw) >= 8 and raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if len(raw) >= 6 and raw[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+async def _assert_public_dns(url: str) -> None:
+    """Resolve every hostname to IPs and reject private/loopback targets."""
+    import socket as _socket
+
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
+    if not host:
+        raise RuntimeError("URL 缺少主机名")
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(host, None)
+    except OSError as error:
+        raise RuntimeError(f"DNS 解析失败：{host}") from error
+    for info in infos:
+        ip = str(info[4][0])
+        if agency_mod.is_private_host(ip) or ip.startswith("127.") or ip == "::1":
+            raise RuntimeError(f"目标解析到内网地址，已拦截：{host} → {ip}")

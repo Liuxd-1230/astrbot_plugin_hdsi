@@ -48,6 +48,7 @@ class LifeLikeNarrator:
         self.replies: list[str] = []
         self.scripts: list[str] = []
         self.proactive_count = 0
+        self.proactive_send_now = 0
         self.fail_every = 37  # occasional provider failure for realism
 
     async def decide_raw(self, request, *, system_prompt: str, temperature,
@@ -117,6 +118,7 @@ class LifeLikeNarrator:
                     "basis": "她在家里，手头事情告一段落。",
                     "sourceEntryIds": [],
                 }
+                outcome_choice = rng.choice(["send-now", "let-go", "let-go"])
                 decision["proactiveContact"] = {
                     "participantId": "__PARTICIPANT__",
                     "origin": rng.choice(["life-event", "relationship-follow-up"]),
@@ -124,8 +126,11 @@ class LifeLikeNarrator:
                     "disclosure": "ordinary",
                     "sourceEntryIds": [],
                     "willingness": round(rng.uniform(0.3, 0.95), 2),
-                    "outcome": rng.choice(["send-now", "let-go", "let-go"]),
+                    "outcome": outcome_choice,
                 }
+                if outcome_choice == "send-now":
+                    self.proactive_send_now += 1
+                self.proactive_count += 1
             if rng.random() < 0.06:
                 decision["alter"] = rng.randint(-2, 2)
 
@@ -290,9 +295,11 @@ async def _collect_report(db, story_id, sender, narrator, days, sweeps) -> dict:
     checks["no_dialogue_stall"] = dup_top[1] <= max(2, len(reply_texts) // 20)
     details["top_duplicate_reply"] = {"text": dup_top[0][:40], "count": dup_top[1]}
 
-    # 5. proactive density bounded
-    proactive_days = days or 1
-    checks["proactive_density_bounded"] = True  # Agency gates verified in unit tests
+    # 5. proactive density bounded (real counter, not a stub)
+    proactive_days = max(days, 1)
+    proposals_per_day = getattr(narrator, "proactive_send_now", 0) / proactive_days
+    checks["proactive_density_bounded"] = proposals_per_day <= 8
+    details["proactive_send_now_proposals"] = getattr(narrator, "proactive_send_now", 0)
     details["deliveries_total"] = len(sender.sent)
 
     # 6. reply-mode mix
@@ -339,9 +346,19 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--out", type=str, default="",
+                        help="write the machine-verifiable JSON report to this path")
     args = parser.parse_args()
     report = asyncio.run(run_simulation(args.days))
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    rendered = json.dumps(report, ensure_ascii=False, indent=2)
+    if args.out:
+        from pathlib import Path as _P
+
+        out_path = _P(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(rendered, encoding="utf-8")
+        print(f"report written to {out_path}", file=sys.stderr)
+    print(rendered)
     sys.exit(0 if report["passed"] else 1)
 
 

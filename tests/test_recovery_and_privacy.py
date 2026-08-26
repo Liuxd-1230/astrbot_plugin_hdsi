@@ -30,7 +30,7 @@ async def test_19_reload_recovery(harness, tmp_path):
 
     # Simulate reload: stop service, close DB, reopen with a fresh service.
     await h.service.stop_background_tasks()
-    await h.service.invalidate_buffered_narratives()
+    h.service.invalidate_buffered_narratives()
     db_path = h.db.path
     await h.db.close()
 
@@ -215,11 +215,12 @@ async def test_25_privacy_no_cross_participant_raw_leak(harness):
     from hdsi.prompt_builder import build_prompt_payload
 
     payload = build_prompt_payload(request)
-    recent_blob = "".join(e["content"] for e in payload["recentScript"])
-    memories_blob = "".join(m["content"] for m in payload["memories"])
-    facts_blob = "".join(f["content"] for f in payload["durableFacts"])
-    whole = recent_blob + memories_blob + facts_blob
-    assert secret not in whole, "raw private content leaked across participants!"
+    # Whole-payload scan (P0-5): continuitySnapshot / state / sceneContext /
+    # participants — everything the model will see, not just three fields.
+    import json as _json
+
+    blob = _json.dumps(payload, ensure_ascii=False, default=str)
+    assert secret not in blob, "raw private content leaked across participants!"
     assert all(
         not e["participantId"] or e["participantId"] == pb.id
         for e in payload["recentScript"]

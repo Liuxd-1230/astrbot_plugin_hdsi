@@ -61,7 +61,7 @@ class Harness:
     async def stop(self) -> None:
         if self.service:
             await self.service.stop_background_tasks()
-            await self.service.invalidate_buffered_narratives()
+            self.service.invalidate_buffered_narratives()
         await self.db.close()
 
     def event(self, sender_id="20001", content="hello", **kwargs) -> IncomingEvent:

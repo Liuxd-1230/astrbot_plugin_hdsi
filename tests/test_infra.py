@@ -225,12 +225,19 @@ async def test_38_sqlite_write_failure_fallback(harness):
     rows = await h.db.get("interlude_script_entry", {"id": entry.id})
     assert rows, "entry persisted despite transient failures"
 
-    # Persistent failure → purge falls back to logical redaction.
+    # Persistent failure → purge must raise CLEANLY (no half-applied ghost
+    # state), leaving the database consistent and readable.
     h.db.fail_all_writes = True
+    with pytest.raises(Exception):
+        await h.service.purge_all_story_data(story.id)
+    rows_mid = await h.db.get("interlude_story", {"id": story.id})
+    assert rows_mid, "story row still readable after failed purge"
+
+    # Once writes recover, the same purge completes the logical redaction.
+    h.db.fail_all_writes = False
     await h.service.purge_all_story_data(story.id)
     entries = await h.db.get("interlude_script_entry", {"story_id": story.id})
-    assert all(e["kind"] == "redacted" for e in entries) or not entries
-    h.db.fail_all_writes = False
+    assert all(e["kind"] == "redacted" for e in entries)
 
 
 async def test_39_same_story_serialization(harness):

@@ -276,7 +276,12 @@ class StoryState(_Model):
     setting_overlay: StorySettingOverlay = Field(default_factory=StorySettingOverlay)
     active_scene_id: Optional[int] = None
     active_arc_id: Optional[int] = None
+    """Global continuity describes the protagonist's PUBLIC life state.
+    It is refreshed only by unattended life turns (advance) so raw private
+    conversation can never leak into another participant's prompt (P0-5)."""
     continuity_snapshot: Optional[ContinuitySnapshot] = None
+    """Per-participant private continuity from relationship-scoped refreshes."""
+    participant_continuity: dict[str, ContinuitySnapshot] = Field(default_factory=dict)
     narrative_update_count: int = 0
     last_continuity_update_at: Optional[str] = None
     automation: StoryAutomationState = Field(default_factory=StoryAutomationState)
@@ -465,6 +470,10 @@ class IntentUpdateDraft(BaseModel):
 class OutgoingMessageDraft(BaseModel):
     participant_id: str
     content: str
+    """Intent row staged for this delivery (P0-1 outbox). The visible
+    character-message ScriptEntry is written only after real transport
+    success; on failure the intent is cancelled and nothing was "said"."""
+    delivery_intent_id: Optional[int] = None
 
 
 class BrowserIntentDraft(BaseModel):
@@ -733,6 +742,15 @@ def normalize_story_state(value: Any) -> StoryState:
     automation_raw = record.get("automation")
     automation = automation_raw if isinstance(automation_raw, dict) else {}
     continuity_raw = record.get("continuitySnapshot") or record.get("continuity_snapshot")
+    participant_continuity_raw = (
+        record.get("participantContinuity") or record.get("participant_continuity")
+    )
+    participant_continuity: dict[str, ContinuitySnapshot] = {}
+    if isinstance(participant_continuity_raw, dict):
+        for pid_key, snap_value in participant_continuity_raw.items():
+            snap = normalize_continuity_snapshot(snap_value)
+            if snap is not None and isinstance(pid_key, str) and pid_key:
+                participant_continuity[pid_key] = snap
 
     alter_raw = record.get("alterSystem") or record.get("alter_system")
     agency_raw = record.get("agencyWindow") or record.get("agency_window")
@@ -770,6 +788,7 @@ def normalize_story_state(value: Any) -> StoryState:
         active_scene_id=record.get("activeSceneId", record.get("active_scene_id")),
         active_arc_id=record.get("activeArcId", record.get("active_arc_id")),
         continuity_snapshot=normalize_continuity_snapshot(continuity_raw),
+        participant_continuity=participant_continuity,
         narrative_update_count=count,
         last_continuity_update_at=(
             record.get("lastContinuityUpdateAt") or record.get("last_continuity_update_at")

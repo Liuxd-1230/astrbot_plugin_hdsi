@@ -192,8 +192,9 @@ async function renderOverview(view) {
     return;
   }
   const s = data.story;
-  const alterChip = s.alterSystem && s.alterSystem.hasOffset
+  const alterChipHtml = s.alterSystem && s.alterSystem.hasOffset
     ? `<span class="chip ok">offset 生效中</span>` : `<span class="chip">无 offset</span>`;
+  const alterChip = { html: alterChipHtml };
   const agency = s.agencyWindow
     ? `${s.agencyWindow.activityLoad} / ${s.agencyWindow.privacy} / ${s.agencyWindow.deviceAccess}（至 ${fmtTime(s.agencyWindow.validUntil)}）`
     : "尚未建立";
@@ -224,17 +225,22 @@ async function renderOverview(view) {
   </div>
   <div class="card"><h2>最近剧情（真实 ScriptEntry）</h2>
     ${table(["#", "时间", "类型", "内容"],
-      (data.recentScript || []).map(e => [`#${e.id}`, fmtTime(e.occurredAt), `<span class="entry-kind">${esc(e.actor)}/${esc(e.kind)}</span>`, esc(e.content)]))}
+      (data.recentScript || []).map(e => [`#${e.id}`, fmtTime(e.occurredAt), { html: `<span class="entry-kind">${esc(e.actor)}/${esc(e.kind)}</span>`}, esc(e.content)]))}
   </div>`;
 }
 
 function kv(k, v) {
   return `<div class="kv"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`;
 }
+function cell(v) {
+  // XSS hardening: every cell is escaped unless explicitly wrapped.
+  if (v && typeof v === "object" && typeof v.html === "string") return v.html;
+  return esc(v);
+}
 function table(headers, rows) {
   if (!rows.length) return '<span class="muted">暂无数据。</span>';
   return `<table><thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead>
-  <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${cell(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
 }
 
 /* ------------------------------------------------ canon */
@@ -282,11 +288,44 @@ async function ensureConfig() {
   return CFG;
 }
 
+function coerceScalarList(text) {
+  return String(text).split("\n").map(s => s.trim()).filter(Boolean)
+    .map(s => /^-?\d+(\.\d+)?$/.test(s) ? Number(s) : s);
+}
+
+// Reconcile a flat form patch against the ORIGINAL config structure so
+// arrays round-trip correctly instead of becoming "0"/"1"-keyed objects or
+// newline strings (P1 WebUI round-trip bug).
+function reconcile(patch, original) {
+  if (Array.isArray(original)) {
+    if (original.every(v => typeof v !== "object" || v === null)) {
+      // scalar list edited as one textarea
+      if (typeof patch === "string") return coerceScalarList(patch);
+      return Array.isArray(patch) ? patch : original;
+    }
+    // array of objects: patch arrives as {"0": {...}, "1": {...}}
+    if (patch && typeof patch === "object" && !Array.isArray(patch)) {
+      const keys = Object.keys(patch).filter(k => /^\d+$/.test(k)).sort((a, b) => a - b);
+      return keys.map((k, i) => reconcile(patch[k] || {}, original[i] || {}));
+    }
+    return Array.isArray(patch) ? patch : original;
+  }
+  if (original && typeof original === "object") {
+    if (!patch || typeof patch !== "object" || Array.isArray(patch)) return original;
+    const out = {};
+    for (const key of Object.keys(original)) {
+      out[key] = key in patch ? reconcile(patch[key], original[key]) : original[key];
+    }
+    return out;
+  }
+  return patch;
+}
+
 function collectFormValues(root) {
-  const patch = {};
+  const raw = {};
   root.querySelectorAll("[data-path]").forEach(el => {
     const parts = el.dataset.path.split(".");
-    let node = patch;
+    let node = raw;
     while (parts.length > 1) {
       const key = parts.shift();
       node[key] = node[key] || {};
@@ -298,11 +337,13 @@ function collectFormValues(root) {
     else if (el.type === "number") value = Number(el.value);
     node[key] = value;
   });
-  return patch;
+  return reconcile(raw, CFG);
 }
 
 async function saveConfigFromForms() {
   const patch = collectFormValues(document.getElementById("view"));
+  // The view may span several top-level sections; deep_merge server-side
+  // keeps unrelated sections untouched.
   await apiPost("/hdsi/config", patch);
   CFG = null;
   toast("配置已保存并即时生效");
@@ -379,8 +420,8 @@ async function renderParticipants(view) {
   view.innerHTML = `<div class="card"><h2>参与者（同一 Canonical Story 的关系分支）</h2>
     ${table(["ID", "称呼", "personId", "状态", "未读/待回", "关系摘要"],
       (rows || []).map(p => [
-        `<span class="mono">${esc(p.id)}</span>`, esc(p.displayName), esc(p.personId),
-        p.status === "active" ? '<span class="chip ok">active</span>' : '<span class="chip warn">paused</span>',
+        { html: `<span class="mono">${esc(p.id)}</span>`}, p.displayName, p.personId,
+        p.status === "active" ? { html: '<span class="chip ok">active</span>' } : { html: '<span class="chip warn">paused</span>' },
         `${p.state.unread_message_count}/${p.state.pending_reply_count}`,
         esc((p.relationship || "").slice(0, 120)),
       ]))}
@@ -396,8 +437,8 @@ async function renderIntents(view) {
     <p class="muted">Intent 是未来的可能性：到期后重新读取当时生活并由主模型重新裁决，绝不直接发送预写台词。</p>
     ${table(["ID", "类型", "参与者", "notBefore", "状态", "摘要", "操作"],
       (rows || []).map(i => [
-        i.id, esc(i.type), esc(i.participant_id || "全局"),
-        fmtTime(i.not_before), `<span class="chip">${esc(i.status)}</span>`,
+        i.id, i.type, i.participant_id || "全局",
+        fmtTime(i.not_before), { html: `<span class="chip">${esc(i.status)}</span>` },
         esc(String(i.summary).slice(0, 160)),
         `<button class="act danger" onclick="cancelIntent(${i.id})">取消</button>`,
       ]))}
@@ -470,7 +511,7 @@ async function renderScript(view) {
     ${table(["#", "occurredAt", "kind/actor", "participant", "内容"],
       (rows || []).slice().reverse().map(e => [
         e.id, fmtTime(e.occurred_at),
-        `<span class="entry-kind">${esc(e.kind)}</span>/${esc(e.actor)}`,
+        { html: `<span class="entry-kind">${esc(e.kind)}</span>/${esc(e.actor)}`},
         esc(e.participant_id || ""),
         `<span class="mono" style="white-space:pre-wrap">${esc(e.content)}</span>`,
       ]))}
