@@ -1648,7 +1648,7 @@ async def _try_decide(
                     temperature=self.config.models.main_temperature,
                     top_p=self.config.models.main_top_p,
                     max_tokens=self.config.models.main_max_tokens,
-                    timeout_seconds=(self.config.models.main_timeout_ms / 1000.0) or 60.0,
+                    timeout_seconds=(self.config.models.main_timeout_ms / 1000.0),
                     response_json=True,
                 )
             finally:
