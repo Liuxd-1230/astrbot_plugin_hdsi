@@ -132,6 +132,9 @@ class Database:
         # database error instead of executing (consumed one per attempt).
         self.fail_transient_writes = 0
         self.fail_all_writes = False
+        # Test hook: when > 0 the next commit attempt raises a transient
+        # error AFTER the statement executed (consumed one per attempt).
+        self.fail_next_commit = 0
 
     # ------------------------------------------------------------ lifecycle
 
@@ -319,13 +322,26 @@ class Database:
                 self.fail_transient_writes -= 1
                 raise RuntimeError("database is locked (injected transient)")
             conn = self.conn
-            cursor = await conn.execute(
-                f"INSERT INTO {table} ({columns}) VALUES ({marks})",
-                list(payload.values()),
-            )
-            rowid = int(cursor.lastrowid or 0)
-            await conn.commit()
-            return rowid
+            await conn.execute("BEGIN")
+            try:
+                cursor = await conn.execute(
+                    f"INSERT INTO {table} ({columns}) VALUES ({marks})",
+                    list(payload.values()),
+                )
+                rowid = int(cursor.lastrowid or 0)
+                if self.fail_next_commit > 0:
+                    self.fail_next_commit -= 1
+                    raise RuntimeError("database is locked (injected commit failure)")
+                await conn.commit()
+                return rowid
+            except BaseException:
+                # P0-B: a failed COMMIT must roll the INSERT back, otherwise
+                # the WriteQueue retry inserts a second identical row.
+                try:
+                    await conn.rollback()
+                except Exception:  # noqa: BLE001 - rollback best-effort
+                    pass
+                raise
 
         return await self._writes.submit(task, retryable=self._retryable)
 

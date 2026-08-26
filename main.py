@@ -443,9 +443,7 @@ class HdsiInterludePlugin(Star):
                 type_name = getattr(comp_type, "value", "") if comp_type is not None else ""
                 if type_name == "image" or type_name == "Image":
                     source = getattr(component, "url", "") or getattr(component, "file", "") or ""
-                    if str(source).startswith("base64://"):
-                        image_sources.append(str(source)[len("base64://"):])
-                    elif source:
+                    if source:
                         image_sources.append(str(source))
                 elif type_name == "at" or type_name == "At":
                     qq = str(getattr(component, "qq", ""))
@@ -663,9 +661,13 @@ class HdsiInterludePlugin(Star):
         delivery_intent_id: int | None = None
         if content:
             # Stage only (P0-1): the visible group entry is written after
-            # transport succeeds.
+            # transport succeeds. Routing lives in the payload so restart
+            # recovery can redeliver instead of silently dropping (P1).
             delivery_intent_id = await self.service.stage_outbound_message(
                 story.id, "", content, outcome["effective_now"],
+                intent_type="outbound-group-message",
+                extra_payload={"groupId": turn.group_id,
+                               "channelId": turn.channel_id},
             )
         await self.db.update("interlude_story", {"id": story.id}, {
             "cursor_at": iso(outcome["effective_now"]),
@@ -780,6 +782,9 @@ class HdsiInterludePlugin(Star):
             match = re.match(r"^data:(image/[a-z0-9.+-]+);base64,(.+)$", value, re.I | re.S)
             if not match:
                 raise RuntimeError("invalid data URI")
+            decoded_size = len(match.group(2)) * 3 // 4
+            if decoded_size > 4 * 1024 * 1024:
+                raise RuntimeError("image exceeds 4MB bound")
             return match.group(1).lower(), value
         if value.startswith("base64://"):
             raw = _base64.b64decode(value[len("base64://"):])
@@ -794,6 +799,7 @@ class HdsiInterludePlugin(Star):
                 # Vision sources come from the platform adapter, not the open
                 # web; still enforce non-private destinations.
                 raise RuntimeError("图片地址未通过安全校验")
+            await _assert_public_dns(value)
             async with httpx.AsyncClient(
                 follow_redirects=False,
                 timeout=max(1.0, self.hdsi_config.browser.navigation_timeout / 1000.0),

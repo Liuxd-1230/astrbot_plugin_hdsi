@@ -16,21 +16,21 @@
   },
   "details": {
     "facts": 0,
-    "memories": 60,
+    "memories": 67,
     "applied_patches": 0,
-    "script_entries": 2767,
+    "script_entries": 2778,
     "top_duplicate_reply": {
       "text": "回复#5：我在想",
       "count": 1
     },
-    "proactive_send_now_proposals": 165,
-    "deliveries_total": 183,
-    "visible_replies": 183,
-    "delayed_intents_seen": 82,
-    "pending_intents": 1,
-    "completed_intents": 321,
+    "proactive_send_now_proposals": 152,
+    "deliveries_total": 182,
+    "visible_replies": 182,
+    "delayed_intents_seen": 89,
+    "pending_intents": 0,
+    "completed_intents": 339,
     "intent_completion_rate": 1.0,
-    "sent_messages": 183
+    "sent_messages": 182
   },
-  "narrator_turns": 3478
+  "narrator_turns": 3493
 }

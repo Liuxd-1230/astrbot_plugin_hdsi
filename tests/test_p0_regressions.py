@@ -62,8 +62,18 @@ async def test_p0_1_failed_send_never_becomes_spoken_fact(quiet_harness):
     outbound = await h.db.get("interlude_intent",
                               {"story_id": story.id, "type": "outbound-message"})
     assert outbound, "delivery must have been staged before transport"
-    assert all(o["status"] == "cancelled" for o in outbound), \
-        f"staged delivery must be cancelled on failure: {[o['status'] for o in outbound]}"
+    # Original semantics: a FAILED send is kept for retry (+30s), never
+    # completed and never written as spoken fact.
+    statuses = {o["status"] for o in outbound}
+    assert "completed" not in statuses
+    assert statuses <= {"pending", "cancelled"}, \
+        f"unexpected staged status after failure: {statuses}"
+    retriable = [o for o in outbound if o["status"] == "pending"]
+    if retriable:
+        from hdsi.types import parse_date
+
+        nb = parse_date(retriable[0]["not_before"])
+        assert nb is not None and nb > h.clock.now(), "retry must be deferred"
 
 
 async def test_p0_1b_successful_send_finalizes_outbox(harness):

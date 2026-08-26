@@ -474,6 +474,11 @@ class OutgoingMessageDraft(BaseModel):
     character-message ScriptEntry is written only after real transport
     success; on failure the intent is cancelled and nothing was "said"."""
     delivery_intent_id: Optional[int] = None
+    """Participant counter snapshot taken when the reply was composed.
+    Finalize subtracts these so user messages that arrive DURING transport
+    are never erased from unread/pending accounting (P0-D)."""
+    baseline_unread: Optional[int] = None
+    baseline_pending: Optional[int] = None
 
 
 class BrowserIntentDraft(BaseModel):
