@@ -299,7 +299,7 @@ function collectFormValues(root) {
     const parts = el.dataset.path.split(".");
     let node = raw;
     while (parts.length > 1) { node[parts[0]] = node[parts[0]] || {}; node = node[parts.shift()]; }
-    raw[parts[0]] = el.type === "number" ? Number(el.value) : el.value;
+    node[parts[0]] = el.type === "number" ? Number(el.value) : el.value;
   });
   return reconcile(raw, CFG);
 }
