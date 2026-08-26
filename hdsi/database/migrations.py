@@ -75,10 +75,7 @@ CREATE TABLE IF NOT EXISTS interlude_script_entry (
 );
 CREATE INDEX IF NOT EXISTS idx_entry_story_time ON interlude_script_entry(story_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_entry_kind ON interlude_script_entry(story_id, kind);
--- P0-1(v2): idempotent finalize — one spoken fact per staged delivery, ever.
-CREATE UNIQUE INDEX IF NOT EXISTS uq_entry_delivery_intent
-  ON interlude_script_entry(delivery_intent_id)
-  WHERE delivery_intent_id IS NOT NULL;
+
 
 CREATE TABLE IF NOT EXISTS interlude_memory (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
