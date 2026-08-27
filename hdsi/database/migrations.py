@@ -5,7 +5,7 @@ migration/export tool can map rows 1:1. Timestamps are stored as ISO-8601
 UTC text; JSON columns are TEXT.
 """
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 TABLES: tuple[str, ...] = (
     "interlude_character",
@@ -47,12 +47,13 @@ CREATE TABLE IF NOT EXISTS interlude_conversation_binding (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   platform_id TEXT NOT NULL DEFAULT '',
   self_id TEXT NOT NULL DEFAULT '',
+  conversation_type TEXT NOT NULL DEFAULT 'all',
   conversation_id TEXT NOT NULL DEFAULT '',
   character_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_binding_conv ON interlude_conversation_binding(platform_id, self_id, conversation_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_binding_conv_v4 ON interlude_conversation_binding(platform_id, self_id, conversation_type, conversation_id);
 CREATE INDEX IF NOT EXISTS idx_binding_char ON interlude_conversation_binding(character_id);
 
 CREATE TABLE IF NOT EXISTS interlude_story (

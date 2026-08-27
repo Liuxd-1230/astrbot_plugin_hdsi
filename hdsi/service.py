@@ -641,11 +641,21 @@ class InterludeService:
         return [ConversationBinding.model_validate(r) for r in rows]
 
     async def get_conversation_binding(
-        self, platform_id: str, self_id: str, conversation_id: str
+        self, platform_id: str, self_id: str, conversation_id: str, conversation_type: str = "all"
     ) -> Optional[ConversationBinding]:
+        if conversation_type != "all":
+            rows = await self.db.get("interlude_conversation_binding", {
+                "platform_id": platform_id,
+                "self_id": self_id,
+                "conversation_type": conversation_type,
+                "conversation_id": conversation_id,
+            }, limit=1)
+            if rows:
+                return ConversationBinding.model_validate(rows[0])
         rows = await self.db.get("interlude_conversation_binding", {
             "platform_id": platform_id,
             "self_id": self_id,
+            "conversation_type": "all",
             "conversation_id": conversation_id,
         }, limit=1)
         if rows:
@@ -653,14 +663,20 @@ class InterludeService:
         return None
 
     async def set_conversation_binding(
-        self, platform_id: str, self_id: str, conversation_id: str, character_id: str
+        self, platform_id: str, self_id: str, conversation_id: str, character_id: str, conversation_type: str = "all"
     ) -> ConversationBinding:
         char = await self.get_character(character_id)
         if not char:
             raise LookupError(f"Character not found: {character_id}")
         now = self.now()
-        existing = await self.get_conversation_binding(platform_id, self_id, conversation_id)
-        if existing is not None:
+        rows = await self.db.get("interlude_conversation_binding", {
+            "platform_id": platform_id,
+            "self_id": self_id,
+            "conversation_type": conversation_type,
+            "conversation_id": conversation_id,
+        }, limit=1)
+        if rows:
+            existing = ConversationBinding.model_validate(rows[0])
             await self.db.update("interlude_conversation_binding", {"id": existing.id}, {
                 "character_id": character_id,
                 "updated_at": iso(now),
@@ -671,6 +687,7 @@ class InterludeService:
         binding = ConversationBinding(
             platform_id=platform_id,
             self_id=self_id,
+            conversation_type=conversation_type,
             conversation_id=conversation_id,
             character_id=character_id,
             created_at=now,
@@ -682,11 +699,18 @@ class InterludeService:
         return binding
 
     async def delete_conversation_binding(
-        self, platform_id: str, self_id: str, conversation_id: str
+        self, platform_id: str, self_id: str, conversation_id: str, conversation_type: Optional[str] = None
     ) -> bool:
-        existing = await self.get_conversation_binding(platform_id, self_id, conversation_id)
-        if existing and existing.id:
-            await self.db.execute("DELETE FROM interlude_conversation_binding WHERE id=?", (existing.id,))
+        query: dict[str, Any] = {
+            "platform_id": platform_id,
+            "self_id": self_id,
+            "conversation_id": conversation_id,
+        }
+        if conversation_type:
+            query["conversation_type"] = conversation_type
+        rows = await self.db.get("interlude_conversation_binding", query, limit=1)
+        if rows and rows[0].get("id"):
+            await self.db.execute("DELETE FROM interlude_conversation_binding WHERE id=?", (rows[0]["id"],))
             return True
         return False
 
@@ -715,65 +739,79 @@ class InterludeService:
         return f"character:{event.platform_id}:{event.self_id}"
 
     async def find_story_for_event(self, event: IncomingEvent) -> Optional[InterludeStory]:
-        # 1. Exact conversation binding match
+        conv_type = "group" if event.message_type == "GroupMessage" else "friend"
         conv_id = event.group_id if event.message_type == "GroupMessage" else event.sender_id
+
+        # 1. Exact conversation binding match (with conversation_type check)
         if conv_id:
-            binding = await self.get_conversation_binding(event.platform_id, event.self_id, conv_id)
+            binding = await self.get_conversation_binding(event.platform_id, event.self_id, conv_id, conv_type)
             if binding is not None:
                 char = await self.get_character(binding.character_id)
                 if char and char.status == CharacterStatus.ACTIVE:
                     story = await self.get_story(char.story_id)
                     if story and story.status == "active":
                         return story
+                logger.info("[hdsi] 显式绑定角色不可用（已暂停/已归档）：会话=%s 目标角色=%s", conv_id, binding.character_id)
+                return None  # Authoritative terminal match: DO NOT FALLBACK!
 
-        # 2. Wildcard bot binding match ("*")
-        binding_wildcard = await self.get_conversation_binding(event.platform_id, event.self_id, "*")
+        # 2. Wildcard conversation binding match ("*") for this platform and self_id
+        binding_wildcard = await self.get_conversation_binding(event.platform_id, event.self_id, "*", conv_type)
         if binding_wildcard is not None:
             char = await self.get_character(binding_wildcard.character_id)
             if char and char.status == CharacterStatus.ACTIVE:
                 story = await self.get_story(char.story_id)
                 if story and story.status == "active":
                     return story
+            logger.info("[hdsi] 通配绑定角色不可用（已暂停/已归档）：* 目标角色=%s", binding_wildcard.character_id)
+            return None  # Authoritative terminal match: DO NOT FALLBACK!
 
-        # 3. Default character match
+        # 3. Default character match (when no explicit binding rule matched)
         default_char = await self.get_default_character()
-        if default_char and default_char.status == CharacterStatus.ACTIVE:
-            story = await self.get_story(default_char.story_id)
-            if story and story.status == "active":
-                return story
+        if default_char:
+            if default_char.status == CharacterStatus.ACTIVE:
+                story = await self.get_story(default_char.story_id)
+                if story and story.status == "active":
+                    return story
+            return None
 
-        # 4. Identity-scoped story fallback
-        preferred = self.story_id_for(event)
-        existing = await self.get_canonical_story(
-            preferred, platform_id=event.platform_id, self_id=event.self_id,
-        )
-        if existing is not None:
-            return existing
-        rows = await self.db.get("interlude_story", {"id": preferred})
-        if rows:
-            return InterludeStory.model_validate(rows[0])
-        # 5. Single active story fallback
-        active = await self.active_stories()
-        if len(active) == 1:
-            return active[0]
+        # 4. Fallback only if character registry is completely empty (e.g. unmigrated legacy database)
+        all_chars = await self.list_characters(include_archived=True)
+        if not all_chars:
+            preferred = self.story_id_for(event)
+            existing = await self.get_canonical_story(
+                preferred, platform_id=event.platform_id, self_id=event.self_id,
+            )
+            if existing is not None and existing.status == "active":
+                return existing
+            rows = await self.db.get("interlude_story", {"id": preferred})
+            if rows and rows[0].get("status") == "active":
+                return InterludeStory.model_validate(rows[0])
+            active = await self.active_stories()
+            if len(active) == 1:
+                return active[0]
+
         return None
 
     async def active_stories(self) -> list[InterludeStory]:
-        """All active stories across active characters (bounded by config)."""
-        chars = await self.db.get("interlude_character", {"status": "active"})
-        if chars:
-            active_story_ids = {c["story_id"] for c in chars}
-            rows = await self.db.get(
-                "interlude_story", {"status": "active"},
-                order_by="updated_at", descending=True,
-                limit=max(1, self.config.runtime.max_stories_per_sweep * 2),
-            )
-            filtered = [r for r in rows if r["id"] in active_story_ids]
-            return [InterludeStory.model_validate(r) for r in filtered[:self.config.runtime.max_stories_per_sweep]]
+        """All active stories across active characters (bounded by config), immune to orphan starvation."""
+        limit = max(1, self.config.runtime.max_stories_per_sweep)
+        sql = (
+            "SELECT s.* FROM interlude_story s "
+            "JOIN interlude_character c ON c.story_id = s.id "
+            "WHERE s.status = 'active' AND c.status = 'active' "
+            "ORDER BY s.updated_at DESC LIMIT ?"
+        )
+        try:
+            raw_rows = await self.db.fetch_all(sql, (limit,))
+            if raw_rows:
+                return [InterludeStory.model_validate(self.db.row_to_dict("interlude_story", r)) for r in raw_rows]
+        except Exception:
+            pass
+        # Fallback if character table not present or empty
         rows = await self.db.get(
             "interlude_story", {"status": "active"},
             order_by="updated_at", descending=True,
-            limit=max(1, self.config.runtime.max_stories_per_sweep),
+            limit=limit,
         )
         return [InterludeStory.model_validate(r) for r in rows]
 

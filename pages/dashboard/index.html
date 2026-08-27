@@ -447,28 +447,55 @@ async function renderStatus(view) {
   </div>`;
 }
 
-// ---- 2. CANON TAB (Familiar layout) ----
+// ---- 2. CANON TAB (Decoupled Single-Character Canon) ----
 async function renderCanon(view) {
-  await getConfig();
-  const d = CFG.story_defaults || {};
-  const prompts = CFG.prompts || {};
+  const d = await apiGet("hdsi/characters/canon", { character_id: CURRENT_CHAR_ID }).catch(() => ({}));
+  const prompts = d.prompts || {};
 
   view.innerHTML = `<div class="card">
-    <h2>🎭 角色设定（Canon）</h2>
-    <p class="muted">这是当前角色的起点设定。修改后建议在"高级设置"中清理对应 overlay。</p>
-    ${fld("story_defaults.character_name", "角色名", d.character_name || "")}
-    ${fld("story_defaults.timezone", "时区", d.timezone || "Asia/Shanghai")}
-    ${ta("story_defaults.character_profile", "角色背景（性格/日程/说话方式）", d.character_profile || "")}
-    ${ta("story_defaults.world", "世界设定", d.world || "")}
-    ${ta("story_defaults.relationship", "默认初始关系", d.relationship || "")}
-    <button class="btn primary" onclick="saveConfigFromForms()">保存设定</button>
+    <h2>🎭 角色设定（Canon · 【${esc(d.character_name || "当前角色")}】）</h2>
+    <p class="muted">当前角色的独立世界线基底设定。每个角色独享自己的 Canon，互不干扰且不会被全局配置覆盖。</p>
+    <div class="field"><label>角色名</label><input type="text" id="canon-name" value="${esc(d.character_name || "")}"></div>
+    <div class="field"><label>时区</label><input type="text" id="canon-tz" value="${esc(d.timezone || "Asia/Shanghai")}"></div>
+    <div class="field"><label>角色背景（性格/日程/说话方式）</label><textarea id="canon-profile" style="min-height:90px">${esc(d.character_profile || "")}</textarea></div>
+    <div class="field"><label>世界设定</label><textarea id="canon-world" style="min-height:70px">${esc(d.world || "")}</textarea></div>
+    <div class="field"><label>默认初始关系</label><textarea id="canon-rel" style="min-height:70px">${esc(d.relationship || "")}</textarea></div>
+    <button class="btn primary" onclick="saveCharacterCanon()">保存角色设定</button>
   </div>
   <div class="card">
     <h2>✍️ 写作风格</h2>
-    ${ta("prompts.main_prompt", "叙事指令", prompts.main_prompt || "")}
-    ${ta("prompts.style_prompt", "文风", prompts.style_prompt || "")}
-    <button class="btn primary" onclick="saveConfigFromForms()">保存风格</button>
+    <div class="field"><label>叙事指令</label><textarea id="canon-prompt-main" style="min-height:70px">${esc(prompts.main_prompt || "")}</textarea></div>
+    <div class="field"><label>文风</label><textarea id="canon-prompt-style" style="min-height:70px">${esc(prompts.style_prompt || "")}</textarea></div>
+    <button class="btn primary" onclick="saveCharacterCanon()">保存风格</button>
   </div>`;
+}
+
+async function saveCharacterCanon() {
+  const name = document.getElementById("canon-name")?.value.trim();
+  const timezone = document.getElementById("canon-tz")?.value.trim();
+  const profile = document.getElementById("canon-profile")?.value.trim();
+  const world = document.getElementById("canon-world")?.value.trim();
+  const relationship = document.getElementById("canon-rel")?.value.trim();
+  const main_prompt = document.getElementById("canon-prompt-main")?.value;
+  const style_prompt = document.getElementById("canon-prompt-style")?.value;
+
+  try {
+    const res = await apiPost("hdsi/characters/canon", {
+      character_id: CURRENT_CHAR_ID,
+      character_name: name,
+      timezone,
+      character_profile: profile,
+      world,
+      relationship,
+      prompts: { main_prompt, style_prompt },
+    });
+    toast(res.message || "设定已保存 ✓");
+    await loadCharacters();
+    await updateBanner();
+    renderCurrent();
+  } catch (e) {
+    toast(e.message || "保存失败", true);
+  }
 }
 
 // ---- 3. PARTICIPANTS TAB (Full Lifecycle Management) ----
@@ -481,16 +508,17 @@ async function renderParticipants(view) {
     `<span class="badge ${p.status === 'active' ? 'ok' : 'warn'}">${esc(p.status)}</span>`,
     p.state?.unread_message_count ?? 0,
     {
-      html: `<div style="display:flex;gap:4px">
+      html: `<div style="display:flex;gap:4px;flex-wrap:wrap">
         <button class="btn sm" onclick='openEditParticipantModal(${JSON.stringify(p).replace(/'/g, "&#39;")})'>编辑</button>
-        <button class="btn sm warn" onclick="resetParticipant('${esc(p.id)}')">重置</button>
-        <button class="btn sm danger" onclick="deleteParticipant('${esc(p.id)}')">移除</button>
+        <button class="btn sm" onclick="clearUnreadParticipant('${esc(p.id)}')">清空未读</button>
+        <button class="btn sm warn" onclick="resetParticipant('${esc(p.id)}')">重置状态</button>
+        <button class="btn sm danger" onclick="deleteParticipant('${esc(p.id)}')">移除/清理</button>
       </div>`
     },
   ]);
   view.innerHTML = `<div class="card">
     <h2>👥 当前角色参与者管理（生命周期）</h2>
-    <p class="muted">在此世界线中与主角产生互动的私聊好友及群成员。支持查看、编辑关系背景、重置未读与状态、或从故事中移除。</p>
+    <p class="muted">在此世界线中与主角产生互动的私聊好友及群成员。支持查看、编辑关系背景、清空未读、重置状态、或彻底销毁专属记忆。</p>
     ${table(["参与者", "关系描述", "会话标识", "状态", "未读数", "生命周期操作"], rows)}
   </div>`;
 }
@@ -541,8 +569,18 @@ async function submitEditParticipant(id) {
   }
 }
 
+async function clearUnreadParticipant(id) {
+  try {
+    const res = await apiPost("hdsi/participants/clear_unread", { id });
+    toast(res.message || "已清空未读计数 ✓");
+    renderCurrent();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
 async function resetParticipant(id) {
-  if (!confirm(`确认重置参与者 ${id} 的未读消息计数与状态？`)) return;
+  if (!confirm(`确认重置参与者 ${id} 的对话运行状态？（关系设定和记忆将保留）`)) return;
   try {
     const res = await apiPost("hdsi/participants/reset", { id });
     toast(res.message || "已重置 ✓");
@@ -553,10 +591,11 @@ async function resetParticipant(id) {
 }
 
 async function deleteParticipant(id) {
-  if (!confirm(`确认从当前故事中彻底移除参与者 ${id}？`)) return;
+  if (!confirm(`确认移除参与者 ${id}？`)) return;
+  const purge = confirm(`是否同时【彻底销毁】该参与者在当前故事中的所有私聊剧本、专属长期记忆和意图？\n\n[确定] = 彻底销毁专属私有数据 (Cascade Purge)\n[取消] = 仅移出参与者列表（历史剧本保留）`);
   try {
-    const res = await apiPost("hdsi/participants/delete", { id });
-    toast(res.message || "已移除 ✓");
+    const res = await apiPost("hdsi/participants/delete", { id, purge_data: purge });
+    toast(res.message || "操作完成 ✓");
     renderCurrent();
   } catch (e) {
     toast(e.message, true);
@@ -565,40 +604,117 @@ async function deleteParticipant(id) {
 
 // ---- 4. MEMORY & FACTS TAB ----
 async function renderMemory(view) {
-  const [facts, intents] = await Promise.all([
+  const [memories, facts, intents] = await Promise.all([
+    apiGet("hdsi/memory", { character_id: CURRENT_CHAR_ID }).catch(() => []),
     apiGet("hdsi/facts", { character_id: CURRENT_CHAR_ID }).catch(() => []),
     apiGet("hdsi/intents", { character_id: CURRENT_CHAR_ID }).catch(() => []),
+  ]);
+
+  const memoryRows = (memories || []).map(m => [
+    `<span class="badge default">${esc(m.category || "fact")}</span>`,
+    esc(m.content),
+    esc(m.participant_id || "全局"),
+    m.importance != null ? Number(m.importance).toFixed(2) : "-",
+    fmtTime(m.created_at),
+    { html: `<button class="btn sm danger" onclick="deleteMemory(${m.id})">删除</button>` },
   ]);
 
   const factsRows = (facts || []).map(f => [
     `<span class="badge default">${esc(f.scope)}</span>`,
     esc(f.content),
-    f.importance != null ? f.importance.toFixed(2) : "-",
-    f.confidence != null ? f.confidence.toFixed(2) : "-",
+    f.importance != null ? Number(f.importance).toFixed(2) : "-",
+    f.confidence != null ? Number(f.confidence).toFixed(2) : "-",
     { html: `<button class="btn sm danger" onclick="deleteFact(${f.id})">删除</button>` },
   ]);
 
   const intentsRows = (intents || []).map(i => [
     esc(i.type),
     fmtTime(i.not_before),
+    `<span class="badge ${i.status === 'pending' ? 'warn' : 'ok'}">${esc(i.status)}</span>`,
     esc(String(i.summary || "").slice(0, 80)),
-    { html: `<button class="btn sm danger" onclick="cancelIntent(${i.id})">取消</button>` },
+    { html: i.status === 'pending' ? `<button class="btn sm danger" onclick="cancelIntent(${i.id})">取消</button>` : '-' },
   ]);
 
   view.innerHTML = `<div class="card">
     <h2>
-      <span>🧠 长期事实库 (Narrative Facts)</span>
+      <span>🧠 长期情景记忆 (Durable Memory)</span>
+      <button class="btn sm primary" onclick="openNewMemoryModal()">➕ 添加长期记忆</button>
+    </h2>
+    <p class="muted">主角与参与者在交互与生活中提炼的情景与事实记忆库。</p>
+    ${table(["分类", "记忆内容", "关联参与者", "重要度", "时间 (当地)", "操作"], memoryRows)}
+  </div>
+
+  <div class="card">
+    <h2>
+      <span>📚 叙事事实库 (Narrative Facts)</span>
       <button class="btn sm primary" onclick="openNewFactModal()">➕ 添加事实</button>
     </h2>
-    <p class="muted">角色自主提炼与沉淀的永久知识与事实。</p>
+    <p class="muted">角色世界线中沉淀的客观世界事实与公理。</p>
     ${table(["领域", "内容", "重要度", "置信度", "操作"], factsRows)}
   </div>
 
   <div class="card">
-    <h2>⏳ 角色意图与计划 (Intents)</h2>
-    <p class="muted">角色未来即将推进或联系的计划。</p>
-    ${table(["类型", "触发时间 (当地)", "摘要", "操作"], intentsRows)}
+    <h2>⏳ 计划与投递队列 (Intents & Outbox)</h2>
+    <p class="muted">角色未来即将推进、等待投递或主动联系的意图计划。</p>
+    ${table(["类型", "触发时间 (当地)", "状态", "摘要", "操作"], intentsRows)}
   </div>`;
+}
+
+function openNewMemoryModal() {
+  openModal(`
+    <div class="modal-head">
+      <h3>➕ 新增长期记忆</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="field"><label>分类 (Category)</label>
+      <select id="modal-mem-category">
+        <option value="fact">fact (事实记忆)</option>
+        <option value="episodic">episodic (情景片段)</option>
+        <option value="preference">preference (偏好记忆)</option>
+        <option value="summary">summary (阶段总结)</option>
+      </select>
+    </div>
+    <div class="field"><label>关联参与者 ID (留空为主角全局记忆)</label>
+      <input type="text" id="modal-mem-part" placeholder="例如：friend_123456">
+    </div>
+    <div class="field"><label>记忆内容 *</label>
+      <textarea id="modal-mem-content" placeholder="输入长期记忆内容..." style="min-height:80px"></textarea>
+    </div>
+    <div class="field"><label>重要度 (0.0 ~ 1.0)</label>
+      <input type="number" id="modal-mem-importance" step="0.1" min="0" max="1" value="0.6">
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn primary" onclick="submitNewMemory()">保存记忆</button>
+    </div>
+  `);
+}
+
+async function submitNewMemory() {
+  const content = document.getElementById("modal-mem-content").value.trim();
+  if (!content) return alert("记忆内容不能为空");
+  const category = document.getElementById("modal-mem-category").value;
+  const participant_id = document.getElementById("modal-mem-part").value.trim();
+  const importance = parseFloat(document.getElementById("modal-mem-importance").value) || 0.5;
+  try {
+    await apiPost("hdsi/memory/create", { character_id: CURRENT_CHAR_ID, content, category, participant_id, importance });
+    toast("长期记忆已添加 ✓");
+    closeModal();
+    renderCurrent();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function deleteMemory(id) {
+  if (!confirm(`确认删除长期记忆 #${id}？`)) return;
+  try {
+    await apiPost("hdsi/memory/delete", { id });
+    toast("长期记忆已删除 ✓");
+    renderCurrent();
+  } catch (e) {
+    toast(e.message, true);
+  }
 }
 
 function openNewFactModal() {
@@ -664,25 +780,32 @@ async function cancelIntent(id) {
   }
 }
 
-// ---- 5. SCRIPT TAB ----
+// ---- 5. SCRIPT TAB (with Decision/Metadata Inspector) ----
 let scriptOffset = 0;
 async function renderScript(view) {
   const rows = await apiGet("hdsi/script", { limit: 30, offset: scriptOffset, character_id: CURRENT_CHAR_ID }).catch(() => []);
+  const entries = (rows || []).reverse();
+  const scriptRows = entries.map((e, idx) => {
+    const metaStr = e.metadata && Object.keys(e.metadata).length ? JSON.stringify(e.metadata, null, 2) : "";
+    const metaBtn = metaStr ? `<button class="btn sm" style="padding:1px 6px;font-size:11px;margin-left:6px" onclick="var el=document.getElementById('meta-box-${idx}');el.style.display=el.style.display==='none'?'block':'none'">元数据</button>` : "";
+    return [
+      fmtTime(e.occurred_at),
+      `<span class="badge ${e.actor === 'character' ? 'ok' : 'default'}">${esc(e.actor)}</span>`,
+      esc(e.kind),
+      `<div>${esc(e.content)}${metaBtn}</div><pre id="meta-box-${idx}" class="mono" style="display:none;background:var(--input-bg);padding:6px;border-radius:6px;margin-top:4px;max-height:140px;overflow:auto">${esc(metaStr)}</pre>`,
+    ];
+  });
+
   view.innerHTML = `<div class="card">
-    <h2>📜 剧情记录（真实事件日志）</h2>
-    <div style="margin-bottom:10px;display:flex;justify-content:space-between">
+    <h2>📜 剧情记录（事件与决策检查器）</h2>
+    <div style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">
       <div>
-        <button class="btn sm" onclick="scriptOffset=Math.max(0,scriptOffset-30);renderCurrent()">← 上一页</button>
-        <button class="btn sm" onclick="scriptOffset+=30;renderCurrent()">下一页 →</button>
+        <button class="btn sm" onclick="scriptOffset=Math.max(0,scriptOffset-30);renderCurrent()">← 较新事件</button>
+        <button class="btn sm" onclick="scriptOffset+=30;renderCurrent()">较早事件 →</button>
       </div>
       <span class="muted">Offset: ${scriptOffset}</span>
     </div>
-    ${table(["时间 (当地)", "主体", "内容"],
-      (rows || []).reverse().map(e => [
-        fmtTime(e.occurred_at),
-        e.kind === "character-message" ? "角色" : e.kind === "user-message" ? "用户" : e.actor,
-        e.content,
-      ]))}
+    ${table(["时间 (当地)", "主体", "类型", "内容与决策元数据"], scriptRows)}
   </div>`;
 }
 
@@ -722,11 +845,12 @@ async function renderCharactersTab(view) {
   }).join("");
 
   const bindingRows = bindings.map(b => [
-    esc(b.platform_id || "*"),
-    esc(b.self_id || "*"),
-    esc(b.conversation_id || "*"),
+    esc(b.platform_id || "-"),
+    esc(b.self_id || "-"),
+    `<span class="badge default">${esc(b.conversation_type || "all")}</span>`,
+    esc(b.conversation_id === "*" ? "* (全平台通配)" : (b.conversation_id || "-")),
     `<strong>${esc(b.characterName || b.character_id)}</strong>`,
-    { html: `<button class="btn sm danger" onclick="deleteBinding('${esc(b.platform_id)}','${esc(b.self_id)}','${esc(b.conversation_id)}')">解绑</button>` },
+    { html: `<button class="btn sm danger" onclick="deleteBinding('${esc(b.platform_id)}','${esc(b.self_id)}','${esc(b.conversation_id)}','${esc(b.conversation_type || "all")}')">解绑</button>` },
   ]);
 
   view.innerHTML = `<div class="card">
@@ -745,8 +869,8 @@ async function renderCharactersTab(view) {
       <span>🔗 会话绑定路由 (Conversation Routing)</span>
       <button class="btn sm primary" onclick="openNewBindingModal()">➕ 添加会话绑定</button>
     </h2>
-    <p class="muted">将特定 QQ 群、私聊会话或平台机器人精准路由至指定角色。未绑定的会话将自动使用默认角色。</p>
-    ${table(["平台", "Bot ID", "会话/群号", "绑定角色", "操作"], bindingRows)}
+    <p class="muted">精准将会话绑定到指定角色。显式绑定的会话具有绝对终止路由权（若目标角色暂停则停止响应，绝不会跳切到其他角色）；未绑定的会话走默认角色。</p>
+    ${table(["平台", "Bot ID", "类型", "会话 ID / 通配", "绑定角色", "操作"], bindingRows)}
   </div>`;
 }
 
@@ -842,7 +966,7 @@ async function setDefaultCharacter(charId) {
 
 async function deleteChar(charId) {
   if (!confirm(`确认删除或归档角色 ${charId}？`)) return;
-  const purge = confirm("是否彻底清除该角色的所有剧本历史与记忆？\n[确定]=彻底清除数据，[取消]=仅归档角色");
+  const purge = confirm("是否彻底清除该角色的所有剧本历史与记忆？\n[确定]=彻底清除数据 (Purge)，[取消]=仅归档角色 (Archive)");
   try {
     const res = await apiPost("hdsi/characters/delete", { character_id: charId, purge_data: purge });
     toast(res.message || "操作完成 ✓");
@@ -898,7 +1022,7 @@ async function submitImportChar() {
 }
 
 function openNewBindingModal() {
-  const options = CHARACTERS_LIST.map(c => `<option value="${esc(c.id)}">${esc(c.name)} (${esc(c.id)})</option>`).join("");
+  const options = CHARACTERS_LIST.filter(c => c.status === 'active').map(c => `<option value="${esc(c.id)}">${esc(c.name)} (${esc(c.id)})</option>`).join("");
   openModal(`
     <div class="modal-head">
       <h3>🔗 添加会话绑定</h3>
@@ -907,13 +1031,20 @@ function openNewBindingModal() {
     <div class="field"><label>目标角色 *</label>
       <select id="modal-bind-char">${options}</select>
     </div>
-    <div class="field"><label>平台 (Platform ID，如 aiocqhttp / qq_official / webchat，通配填 *)</label>
+    <div class="field"><label>平台标识 (Platform ID，如 aiocqhttp / qq_official / webchat) *</label>
       <input type="text" id="modal-bind-platform" placeholder="例如：aiocqhttp 或 qq_official">
     </div>
-    <div class="field"><label>机器人 ID (Bot Self ID，通配留空或填 *)</label>
+    <div class="field"><label>机器人账号 (Bot Self ID) *</label>
       <input type="text" id="modal-bind-self" placeholder="例如：10001">
     </div>
-    <div class="field"><label>会话 ID (群号或好友账号，通配填 *) *</label>
+    <div class="field"><label>会话类型 (Conversation Type)</label>
+      <select id="modal-bind-type">
+        <option value="all">全部会话 (all)</option>
+        <option value="group">群聊 (group)</option>
+        <option value="friend">私聊 (friend)</option>
+      </select>
+    </div>
+    <div class="field"><label>会话 ID (群号或好友账号；填 * 通配该 Bot 下所有会话) *</label>
       <input type="text" id="modal-bind-conv" placeholder="例如群号 123456789 或 *">
     </div>
     <div class="modal-foot">
@@ -927,11 +1058,12 @@ async function submitNewBinding() {
   const charId = document.getElementById("modal-bind-char").value;
   const platform = document.getElementById("modal-bind-platform").value.trim();
   const selfId = document.getElementById("modal-bind-self").value.trim();
+  const convType = document.getElementById("modal-bind-type").value;
   const convId = document.getElementById("modal-bind-conv").value.trim();
-  if (!charId || !convId) return alert("必须指定角色与会话 ID");
+  if (!charId || !platform || !selfId || !convId) return alert("请完整填写角色、平台、Bot ID 与会话 ID");
   try {
     await apiPost("hdsi/bindings/save", {
-      platform_id: platform, self_id: selfId, conversation_id: convId, character_id: charId,
+      platform_id: platform, self_id: selfId, conversation_type: convType, conversation_id: convId, character_id: charId,
     });
     toast("绑定成功 ✓");
     closeModal();
@@ -939,32 +1071,38 @@ async function submitNewBinding() {
   } catch (e) { toast(e.message, true); }
 }
 
-async function deleteBinding(platform, selfId, convId) {
-  if (!confirm(`确认解绑会话 ${convId}？`)) return;
+async function deleteBinding(platform, selfId, convId, convType) {
+  if (!confirm(`确认解除绑定：平台=${platform} 会话=${convId}？`)) return;
   try {
-    await apiPost("hdsi/bindings/delete", { platform_id: platform, self_id: selfId, conversation_id: convId });
-    toast("已解绑 ✓");
+    await apiPost("hdsi/bindings/delete", { platform_id: platform, self_id: selfId, conversation_id: convId, conversation_type: convType });
+    toast("已解除绑定 ✓");
     renderCurrent();
   } catch (e) { toast(e.message, true); }
 }
 
 // ---- 7. ADVANCED TAB ----
 async function renderAdvanced(view) {
-  await getConfig();
+  await getConfig(true);
   view.innerHTML = `
   <div class="card"><h2>⚙️ 运行参数 (全局)</h2>
-    <p class="muted">多角色共享的全局叙事引擎参数。</p>
+    <p class="muted">多角色共享的全局叙事引擎参数与生命周期设置。</p>
     ${fld("runtime.auto_advance_interval_minutes","自动推进间隔（分钟）",CFG.runtime?.auto_advance_interval_minutes ?? 120)}
-    ${fld("runtime.user_message_debounce_seconds","消息合并等待（秒）",CFG.runtime?.user_message_debounce_seconds ?? 1)}
-    ${sel("runtime.allow_proactive_messages","允许主动联系",CFG.runtime?.allow_proactive_messages ?? false)}
-    <button class="btn primary" onclick="saveConfigFromForms()">保存参数</button>
+    ${fld("runtime.user_message_debounce_seconds","消息合并防抖等待（秒）",CFG.runtime?.user_message_debounce_seconds ?? 1)}
+    ${sel("runtime.allow_proactive_messages","全局允许主动联系",CFG.runtime?.allow_proactive_messages ?? false)}
+    <button class="btn primary" onclick="saveConfigFromForms()">保存全局参数</button>
+  </div>
+  <div class="card"><h2>📦 系统级完整备份与恢复</h2>
+    <p class="muted">导出/恢复包含 13 张完整数据库表、所有角色世界线、剧本历史、记忆、意图及全局配置的一致性快照。</p>
+    <div class="actions">
+      <button class="btn primary" onclick="backupSystem()">📦 完整系统备份 (JSON/Snapshot)</button>
+      <button class="btn" onclick="openRestoreModal()">📥 完整系统恢复</button>
+    </div>
   </div>
   <div class="card"><h2>🔧 当前角色维护操作</h2>
     <div class="actions">
       <button class="btn" onclick="maint('advance')">手动推进当前剧情</button>
       <button class="btn" onclick="maint('compact')">整理当前角色记忆</button>
       <button class="btn" onclick="maint('rebuild_continuity')">重建当前连续性</button>
-      <button class="btn" onclick="backupSystem()">📦 完整系统备份</button>
     </div>
   </div>
   <div class="card"><h2>⚠️ 危险操作</h2>
@@ -996,9 +1134,9 @@ function sel(path, label, value) {
 async function saveConfigFromForms() {
   try {
     const patch = collectFormValues(document.getElementById("view"));
-    await apiPost("hdsi/config", { ...patch, character_id: CURRENT_CHAR_ID });
+    await apiPost("hdsi/config", patch);
     CFG = null;
-    toast("已保存 ✓");
+    toast("全局参数已保存 ✓");
     await updateBanner();
   } catch (e) {
     toast(e.message || "保存失败", true);
@@ -1063,16 +1201,63 @@ async function maint(action, arg) {
 
 async function backupSystem() {
   try {
-    const data = await apiGet("hdsi/backup");
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const res = await apiGet("hdsi/backup");
+    const blob = new Blob([JSON.stringify(res, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `hdsi_backup_${Date.now()}.json`;
+    a.download = `hdsi_full_backup_${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
     toast("完整系统备份已导出 ✓");
   } catch (e) { toast(e.message, true); }
+}
+
+function openRestoreModal() {
+  openModal(`
+    <div class="modal-head">
+      <h3>📥 完整系统恢复</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <p class="muted">上传由"完整系统备份"导出的 JSON 文件，将全量恢复 13 张核心数据表与全局配置。</p>
+    <div class="field">
+      <input type="file" id="modal-restore-file" accept=".json" onchange="handleRestoreFile(this)">
+    </div>
+    <div class="field"><label>或直接粘贴备份 JSON</label>
+      <textarea id="modal-restore-json" placeholder='{"manifest": {...}, "tables": {...}}' style="min-height:120px"></textarea>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn danger" onclick="submitSystemRestore()">确认全量恢复</button>
+    </div>
+  `);
+}
+
+function handleRestoreFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    document.getElementById("modal-restore-json").value = e.target.result;
+  };
+  reader.readAsText(file);
+}
+
+async function submitSystemRestore() {
+  const raw = document.getElementById("modal-restore-json").value.trim();
+  if (!raw) return alert("请先选择备份文件或粘贴 JSON 数据");
+  if (!confirm("⚠️ 警告：恢复备份将彻底覆盖现有数据库的所有角色、世界线、剧本与记忆！确认继续？")) return;
+  try {
+    const data = JSON.parse(raw);
+    const res = await apiPost("hdsi/restore", { data });
+    toast(res.message || "系统恢复成功 ✓");
+    closeModal();
+    await loadCharacters();
+    await updateBanner();
+    renderCurrent();
+  } catch (e) {
+    toast("恢复失败：" + e.message, true);
+  }
 }
 
 async function importKoishi() {

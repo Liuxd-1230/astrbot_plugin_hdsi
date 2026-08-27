@@ -337,6 +337,8 @@ class HdsiInterludePlugin(Star):
         self.context.register_web_api(f"{api}/characters", self._api_characters_list, ["GET"], "HDSI 角色列表")
         self.context.register_web_api(f"{api}/characters/create", self._api_characters_create, ["POST"], "HDSI 创建角色")
         self.context.register_web_api(f"{api}/characters/detail", self._api_characters_detail, ["GET"], "HDSI 角色详情")
+        self.context.register_web_api(f"{api}/characters/canon", self._api_characters_canon_get, ["GET"], "HDSI 角色 Canon 设定")
+        self.context.register_web_api(f"{api}/characters/canon", self._api_characters_canon_set, ["POST"], "HDSI 保存角色 Canon 设定")
         self.context.register_web_api(f"{api}/characters/update", self._api_characters_update, ["POST"], "HDSI 更新角色")
         self.context.register_web_api(f"{api}/characters/clone", self._api_characters_clone, ["POST"], "HDSI 复制角色")
         self.context.register_web_api(f"{api}/characters/delete", self._api_characters_delete, ["POST"], "HDSI 删除角色")
@@ -346,10 +348,14 @@ class HdsiInterludePlugin(Star):
         self.context.register_web_api(f"{api}/bindings", self._api_bindings_list, ["GET"], "HDSI 会话绑定列表")
         self.context.register_web_api(f"{api}/bindings/save", self._api_bindings_save, ["POST"], "HDSI 保存会话绑定")
         self.context.register_web_api(f"{api}/bindings/delete", self._api_bindings_delete, ["POST"], "HDSI 删除会话绑定")
+        self.context.register_web_api(f"{api}/memory", self._api_memory_list, ["GET"], "HDSI 长期记忆列表")
+        self.context.register_web_api(f"{api}/memory/create", self._api_memory_create, ["POST"], "HDSI 创建长期记忆")
+        self.context.register_web_api(f"{api}/memory/delete", self._api_memory_delete, ["POST"], "HDSI 删除长期记忆")
         self.context.register_web_api(f"{api}/facts", self._api_facts_list, ["GET"], "HDSI 事实列表")
         self.context.register_web_api(f"{api}/facts/create", self._api_facts_create, ["POST"], "HDSI 创建事实")
         self.context.register_web_api(f"{api}/facts/delete", self._api_facts_delete, ["POST"], "HDSI 删除事实")
         self.context.register_web_api(f"{api}/participants/update", self._api_participants_update, ["POST"], "HDSI 更新参与者")
+        self.context.register_web_api(f"{api}/participants/clear_unread", self._api_participants_clear_unread, ["POST"], "HDSI 清空参与者未读")
         self.context.register_web_api(f"{api}/participants/reset", self._api_participants_reset, ["POST"], "HDSI 重置参与者状态")
         self.context.register_web_api(f"{api}/participants/delete", self._api_participants_delete, ["POST"], "HDSI 删除参与者")
         self.context.register_web_api(f"{api}/backup", self._api_backup, ["GET"], "HDSI 完整备份")
@@ -362,10 +368,9 @@ class HdsiInterludePlugin(Star):
             logger.warning("[hdsi] %d 条投递因崩溃标记为 uncertain", uncertain)
         await self.service.ensure_character_registry()
         await self._recover_pending_tasks()
-        await self.service.sync_story_setting_from_defaults()
         if self.hdsi_config.enable:
             self.service.start_background_tasks()
-        logger.info("[hdsi] HDS Interlude 已加载 v1.0.0（持续叙事运行时，非 Persona 插件）")
+        logger.info("[hdsi] HDS Interlude 已加载 v1.1.0（持续叙事运行时）")
 
     async def terminate(self) -> None:
         if self.service is not None:
@@ -1051,31 +1056,17 @@ class HdsiInterludePlugin(Star):
             },
         }
 
-    async def _api_get_config(self, character_id: Optional[str] = None):
+    async def _api_get_config(self):
         cfg_dump = self.hdsi_config.model_dump(by_alias=False)
-        service, story = await self._resolve_story_for_req(character_id)
-        if story is not None:
-            s = story.setting
-            cfg_dump["story_defaults"] = {
-                "character_name": s.character.name,
-                "character_profile": s.character.profile,
-                "user_profile": s.user_profile,
-                "relationship": s.relationship,
-                "world": s.world,
-                "supporting_cast": s.supporting_cast,
-                "location": s.location,
-                "style": s.style,
-                "timezone": s.timezone,
-            }
         return {"status": "ok", "data": cfg_dump}
 
-    async def _api_set_config(self, payload: Optional[dict] = None, body: Optional[dict] = None, character_id: Optional[str] = None):
+    async def _api_set_config(self, payload: Optional[dict] = None, body: Optional[dict] = None):
         from .hdsi.config import deep_merge
 
         incoming = body or payload or (await self._request_json_body()) or {}
         if not isinstance(incoming, dict) or not incoming:
             return {"status": "error", "message": "配置必须是 JSON 对象"}
-        char_id = incoming.pop("character_id", None) or character_id
+        # Global config update only — do NOT mutate character story settings here!
         merged = deep_merge(self.hdsi_config.model_dump(), incoming)
         try:
             updated = HdsiConfig.model_validate(merged)
@@ -1085,7 +1076,6 @@ class HdsiInterludePlugin(Star):
         if self.service is not None:
             self.service.config = updated
             self.service.narrator.slots = updated.models
-            await self.service.sync_story_setting_from_defaults(character_id=char_id)
         save_config_file(self.config_path, updated)
         if self.raw_config is not None:
             try:
@@ -1096,6 +1086,83 @@ class HdsiInterludePlugin(Star):
             except Exception:  # noqa: BLE001
                 pass
         return {"status": "ok"}
+
+    async def _api_characters_canon_get(self, character_id: Optional[str] = None):
+        service = await self._require_service()
+        char_id = character_id
+        if not char_id:
+            def_char = await service.get_default_character()
+            char_id = def_char.id if def_char else None
+        if not char_id:
+            return {"status": "error", "message": "未找到角色"}
+        char = await service.get_character(char_id)
+        if not char:
+            return {"status": "error", "message": f"角色不存在：{char_id}"}
+        story = await service.get_story(char.story_id)
+        s = story.setting
+        return {
+            "status": "ok",
+            "data": {
+                "character_id": char.id,
+                "character_name": s.character.name,
+                "timezone": s.timezone or "Asia/Shanghai",
+                "character_profile": s.character.profile,
+                "world": s.world,
+                "relationship": s.relationship,
+                "prompts": {
+                    "main_prompt": self.hdsi_config.prompts.main_prompt,
+                    "style_prompt": self.hdsi_config.prompts.style_prompt,
+                },
+                "supporting_cast": s.supporting_cast,
+                "location": s.location,
+                "style": s.style,
+            },
+        }
+
+    async def _api_characters_canon_set(self, body: Optional[dict] = None):
+        incoming = body or (await self._request_json_body()) or {}
+        char_id = str(incoming.get("character_id") or incoming.get("id") or "").strip()
+        if not char_id:
+            return {"status": "error", "message": "缺少 character_id"}
+        service = await self._require_service()
+        char = await service.get_character(char_id)
+        if not char:
+            return {"status": "error", "message": f"角色不存在：{char_id}"}
+        story = await service.get_story(char.story_id)
+
+        name = str(incoming.get("character_name") or incoming.get("name") or story.setting.character.name).strip()
+        profile = str(incoming.get("character_profile") or incoming.get("profile") if "character_profile" in incoming or "profile" in incoming else story.setting.character.profile).strip()
+        world = str(incoming.get("world") if "world" in incoming else story.setting.world)
+        relationship = str(incoming.get("relationship") if "relationship" in incoming else story.setting.relationship)
+        timezone_str = str(incoming.get("timezone") if "timezone" in incoming else story.setting.timezone)
+
+        story.setting.character.name = name
+        story.setting.character.profile = profile
+        story.setting.world = world
+        story.setting.relationship = relationship
+        story.setting.timezone = timezone_str
+
+        prompts = incoming.get("prompts")
+        if isinstance(prompts, dict):
+            if "main_prompt" in prompts:
+                self.hdsi_config.prompts.main_prompt = prompts["main_prompt"]
+            if "style_prompt" in prompts:
+                self.hdsi_config.prompts.style_prompt = prompts["style_prompt"]
+            save_config_file(self.config_path, self.hdsi_config)
+
+        now = service.now()
+        await self.db.update("interlude_story", {"id": story.id}, {
+            "setting": story.setting.model_dump(mode="json"),
+            "updated_at": iso(now),
+        })
+
+        await self.db.update("interlude_character", {"id": char.id}, {
+            "name": name,
+            "description": profile,
+            "updated_at": iso(now),
+        })
+
+        return {"status": "ok", "message": f"角色【{name}】设定已保存 ✓"}
 
     async def _api_participants(self, character_id: Optional[str] = None):
         service, story = await self._resolve_story_for_req(character_id)
@@ -1138,6 +1205,24 @@ class HdsiInterludePlugin(Star):
             await self.db.update("interlude_participant", {"id": part_id}, update_data)
         return {"status": "ok", "message": "参与者信息已更新"}
 
+    async def _api_participants_clear_unread(self, body: Optional[dict] = None):
+        incoming = body or (await self._request_json_body()) or {}
+        part_id = str(incoming.get("id") or incoming.get("participant_id") or "").strip()
+        if not part_id:
+            return {"status": "error", "message": "缺少参与者 ID"}
+        service = await self._require_service()
+        rows = await self.db.get("interlude_participant", {"id": part_id})
+        if not rows:
+            return {"status": "error", "message": f"未找到参与者 {part_id}"}
+        p = InterludeParticipant.model_validate(rows[0])
+        p.state.unread_message_count = 0
+        p.state.pending_message_count = 0
+        await self.db.update("interlude_participant", {"id": part_id}, {
+            "state": p.state.model_dump(mode="json"),
+            "updated_at": iso(service.now()),
+        })
+        return {"status": "ok", "message": "参与者未读消息计数已清除"}
+
     async def _api_participants_reset(self, body: Optional[dict] = None):
         incoming = body or (await self._request_json_body()) or {}
         part_id = str(incoming.get("id") or incoming.get("participant_id") or "").strip()
@@ -1152,15 +1237,74 @@ class HdsiInterludePlugin(Star):
             "state": empty_participant_state().model_dump(mode="json"),
             "updated_at": iso(service.now()),
         })
-        return {"status": "ok", "message": "参与者未读计数与状态已重置"}
+        return {"status": "ok", "message": "参与者关系运行状态已重置"}
 
     async def _api_participants_delete(self, body: Optional[dict] = None):
         incoming = body or (await self._request_json_body()) or {}
         part_id = str(incoming.get("id") or incoming.get("participant_id") or "").strip()
         if not part_id:
             return {"status": "error", "message": "缺少参与者 ID"}
-        await self.db.execute("DELETE FROM interlude_participant WHERE id=?", (part_id,))
-        return {"status": "ok", "message": f"参与者 {part_id} 已移除"}
+        purge = bool(incoming.get("purge_data", False))
+        if purge:
+            stmts = [
+                ("DELETE FROM interlude_script_entry WHERE participant_id=?", (part_id,)),
+                ("DELETE FROM interlude_memory WHERE participant_id=?", (part_id,)),
+                ("DELETE FROM interlude_fact WHERE participant_id=?", (part_id,)),
+                ("DELETE FROM interlude_intent WHERE participant_id=?", (part_id,)),
+                ("DELETE FROM interlude_state_patch WHERE participant_id=?", (part_id,)),
+                ("DELETE FROM interlude_overlay_snapshot WHERE participant_id=?", (part_id,)),
+                ("DELETE FROM interlude_web_observation WHERE participant_id=?", (part_id,)),
+                ("DELETE FROM interlude_participant WHERE id=?", (part_id,)),
+            ]
+            await self.db.execute_many(stmts)
+            return {"status": "ok", "message": f"参与者 {part_id} 及其专属记忆已彻底清理"}
+        else:
+            await self.db.execute("DELETE FROM interlude_participant WHERE id=?", (part_id,))
+            return {"status": "ok", "message": f"参与者 {part_id} 已移除（历史记录已保留）"}
+
+    async def _api_memory_list(self, character_id: Optional[str] = None):
+        service, story = await self._resolve_story_for_req(character_id)
+        if story is None:
+            return {"status": "ok", "data": []}
+        rows = await self.db.get(
+            "interlude_memory", {"story_id": story.id},
+            order_by="importance", descending=True, limit=100,
+        )
+        return {"status": "ok", "data": rows}
+
+    async def _api_memory_create(self, body: Optional[dict] = None):
+        incoming = body or (await self._request_json_body()) or {}
+        char_id = incoming.get("character_id")
+        service, story = await self._resolve_story_for_req(char_id)
+        if story is None:
+            return {"status": "error", "message": "没有活动故事"}
+        content = str(incoming.get("content", "")).strip()
+        if not content:
+            return {"status": "error", "message": "记忆内容不能为空"}
+        category = str(incoming.get("category", "fact")).strip()
+        participant_id = str(incoming.get("participant_id", "")).strip()
+        importance = float(incoming.get("importance", 0.5))
+        now = service.now()
+        mem_id = await self.db.insert_returning_id("interlude_memory", {
+            "story_id": story.id,
+            "participant_id": participant_id,
+            "category": category,
+            "content": content,
+            "importance": importance,
+            "status": "active",
+            "source_entry_id": None,
+            "created_at": iso(now),
+            "updated_at": iso(now),
+        })
+        return {"status": "ok", "message": f"已添加长期记忆 #{mem_id}", "data": {"id": mem_id}}
+
+    async def _api_memory_delete(self, body: Optional[dict] = None):
+        incoming = body or (await self._request_json_body()) or {}
+        mem_id = incoming.get("id")
+        if not mem_id:
+            return {"status": "error", "message": "缺少记忆 ID"}
+        await self.db.execute("DELETE FROM interlude_memory WHERE id=?", (int(mem_id),))
+        return {"status": "ok", "message": f"记忆 #{mem_id} 已删除"}
 
     async def _api_script(self, limit: int = 30, offset: int = 0, character_id: Optional[str] = None):
         service, story = await self._resolve_story_for_req(character_id)
@@ -1238,7 +1382,7 @@ class HdsiInterludePlugin(Star):
         char_id = character_id
         if not char_id:
             default_char = await service.get_default_character()
-            char_id = default_char.id if default_char else None
+            char_id = def_char.id if def_char else None
         if not char_id:
             return {"status": "error", "message": "未找到角色"}
         char = await service.get_character(char_id)
@@ -1371,13 +1515,16 @@ class HdsiInterludePlugin(Star):
         incoming = body or (await self._request_json_body()) or {}
         platform_id = str(incoming.get("platform_id", "")).strip()
         self_id = str(incoming.get("self_id", "")).strip()
+        conv_type = str(incoming.get("conversation_type", "all")).strip() or "all"
         conv_id = str(incoming.get("conversation_id", "")).strip()
         char_id = str(incoming.get("character_id", "")).strip()
         if not char_id:
             return {"status": "error", "message": "必须指定绑定的角色"}
+        if not conv_id:
+            return {"status": "error", "message": "必须指定会话 ID（或 * 通配）"}
         service = await self._require_service()
         try:
-            b = await service.set_conversation_binding(platform_id, self_id, conv_id, char_id)
+            b = await service.set_conversation_binding(platform_id, self_id, conv_id, char_id, conversation_type=conv_type)
             return {"status": "ok", "message": "绑定成功", "data": b.model_dump(mode="json")}
         except Exception as err:
             return {"status": "error", "message": f"保存绑定失败：{err}"}
@@ -1386,9 +1533,10 @@ class HdsiInterludePlugin(Star):
         incoming = body or (await self._request_json_body()) or {}
         platform_id = str(incoming.get("platform_id", "")).strip()
         self_id = str(incoming.get("self_id", "")).strip()
+        conv_type = incoming.get("conversation_type")
         conv_id = str(incoming.get("conversation_id", "")).strip()
         service = await self._require_service()
-        ok = await service.delete_conversation_binding(platform_id, self_id, conv_id)
+        ok = await service.delete_conversation_binding(platform_id, self_id, conv_id, conversation_type=conv_type)
         if ok:
             return {"status": "ok", "message": "已解除绑定"}
         return {"status": "error", "message": "未找到对应绑定记录"}
@@ -1413,7 +1561,7 @@ class HdsiInterludePlugin(Star):
         importance = float(incoming.get("importance", 0.5))
         confidence = float(incoming.get("confidence", 0.8))
         now = service.now()
-        fact_id = await self.db.insert("interlude_fact", {
+        fact_id = await self.db.insert_returning_id("interlude_fact", {
             "story_id": story.id,
             "participant_id": "",
             "scope": scope,
@@ -1438,43 +1586,89 @@ class HdsiInterludePlugin(Star):
         await self.db.execute("DELETE FROM interlude_fact WHERE id=?", (int(fact_id),))
         return {"status": "ok", "message": f"事实 #{fact_id} 已删除"}
 
-    async def _api_backup(self, character_id: Optional[str] = None):
+    async def _api_backup(self):
+        from .hdsi.database.migrations import SCHEMA_VERSION, TABLES
+
         service = await self._require_service()
-        chars = await service.list_characters(include_archived=True)
-        stories = await self.db.get("interlude_story", {})
-        bindings = await self.db.get("interlude_conversation_binding", {})
-        facts = await self.db.get("interlude_fact", {})
-        participants = await self.db.get("interlude_participant", {})
+        table_data = {}
+        table_counts = {}
+        for tbl in TABLES:
+            try:
+                rows = await self.db.get(tbl, {})
+                table_data[tbl] = rows
+                table_counts[tbl] = len(rows)
+            except Exception as err:
+                logger.warning("[hdsi] 备份表 %s 失败: %s", tbl, err)
+                table_data[tbl] = []
+                table_counts[tbl] = 0
+
+        manifest = {
+            "version": 2,
+            "schema_version": SCHEMA_VERSION,
+            "created_at": iso(service.now()),
+            "table_counts": table_counts,
+            "total_records": sum(table_counts.values()),
+        }
         return {
             "status": "ok",
             "data": {
-                "version": 1,
+                "manifest": manifest,
                 "config": self.hdsi_config.model_dump(mode="json"),
-                "characters": [c.model_dump(mode="json") for c in chars],
-                "stories": stories,
-                "bindings": bindings,
-                "facts": facts,
-                "participants": participants,
+                "tables": table_data,
             },
         }
 
     async def _api_restore(self, body: Optional[dict] = None):
+        from .hdsi.database.migrations import TABLES
+
         incoming = body or (await self._request_json_body()) or {}
         data = incoming.get("data") or incoming
         if not isinstance(data, dict):
             return {"status": "error", "message": "备份数据格式错误"}
-        chars = data.get("characters") or []
-        for c in chars:
-            existing = await self.db.get("interlude_character", {"id": c.get("id")})
-            if existing:
-                await self.db.update("interlude_character", {"id": c.get("id")}, c)
-            else:
-                await self.db.insert("interlude_character", c)
-        bindings = data.get("bindings") or []
-        for b in bindings:
-            b_data = {k: v for k, v in b.items() if k != "id"}
-            await self.db.insert("interlude_conversation_binding", b_data)
-        return {"status": "ok", "message": "恢复成功"}
+        service = await self._require_service()
+
+        tables = data.get("tables")
+        if not tables and ("characters" in data or "stories" in data):
+            # Compatibility fallback for legacy v1 partial backup
+            tables = {
+                "interlude_character": data.get("characters", []),
+                "interlude_conversation_binding": data.get("bindings", []),
+                "interlude_story": data.get("stories", []),
+                "interlude_participant": data.get("participants", []),
+                "interlude_fact": data.get("facts", []),
+            }
+        if not isinstance(tables, dict):
+            return {"status": "error", "message": "缺少表格数据 (tables)"}
+
+        # Clear existing rows in reverse dependency order
+        clear_stmts = [(f"DELETE FROM {tbl}", ()) for tbl in reversed(TABLES)]
+        await self.db.execute_many(clear_stmts)
+
+        restored_counts = {}
+        for tbl in TABLES:
+            rows = tables.get(tbl) or []
+            count = 0
+            for r in rows:
+                if isinstance(r, dict):
+                    await self.db.insert(tbl, r)
+                    count += 1
+            restored_counts[tbl] = count
+
+        cfg_raw = data.get("config")
+        if isinstance(cfg_raw, dict):
+            try:
+                self.hdsi_config = HdsiConfig.model_validate(cfg_raw)
+                service.config = self.hdsi_config
+                service.narrator.slots = self.hdsi_config.models
+                save_config_file(self.config_path, self.hdsi_config)
+            except Exception as err:
+                logger.warning("[hdsi] 恢复配置失败: %s", err)
+
+        return {
+            "status": "ok",
+            "message": f"系统已成功恢复（共恢复 {sum(restored_counts.values())} 条记录）",
+            "data": restored_counts,
+        }
 
     # ------------------------------------------------------------ helpers
 

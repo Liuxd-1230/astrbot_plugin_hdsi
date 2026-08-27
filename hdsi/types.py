@@ -85,8 +85,10 @@ class SceneStatus(str, enum.Enum):
 
 class IntentStatus(str, enum.Enum):
     PENDING = "pending"
+    SENDING = "sending"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
+    UNCERTAIN = "uncertain"
 
 
 class StatePatchTarget(str, enum.Enum):
@@ -281,6 +283,7 @@ class ConversationBinding(_Model):
     id: Optional[int] = None
     platform_id: str = ""
     self_id: str = ""
+    conversation_type: Literal["friend", "group", "all"] = "all"
     conversation_id: str = ""
     character_id: str
     created_at: datetime
@@ -344,6 +347,7 @@ class ScriptEntry(_Model):
     occurred_at: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
+    delivery_intent_id: Optional[int] = None
 
 
 class NarrativeMemory(_Model):

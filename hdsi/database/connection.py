@@ -192,6 +192,18 @@ class Database:
                 "ON interlude_script_entry(delivery_intent_id) "
                 "WHERE delivery_intent_id IS NOT NULL"
             )
+        if version < 4:
+            cursor = await conn.execute("PRAGMA table_info(interlude_conversation_binding)")
+            cols = {r[1] for r in await cursor.fetchall()}
+            await cursor.close()
+            if "conversation_type" not in cols:
+                await conn.execute(
+                    "ALTER TABLE interlude_conversation_binding ADD COLUMN conversation_type TEXT NOT NULL DEFAULT 'all'"
+                )
+            await conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_binding_conv_v4 "
+                "ON interlude_conversation_binding(platform_id, self_id, conversation_type, conversation_id)"
+            )
 
     async def close(self) -> None:
         async with self._lock:
@@ -473,6 +485,10 @@ def _to_db_value(op: str, value: Any) -> Any:
         return iso(value)
     if isinstance(value, bool):
         return 1 if value else 0
+    if hasattr(value, "value") and not isinstance(value, (dict, list, str, int, float)):
+        return value.value
+    if hasattr(value, "model_dump"):
+        return json.dumps(value.model_dump(mode="json"), ensure_ascii=False)
     if op != "=" and isinstance(value, (list, tuple)):
         raise ValueError("range operands must be scalars")
     return value
@@ -494,6 +510,8 @@ def _prepare_row(table: str, data: dict[str, Any]) -> dict[str, Any]:
                     out[key] = "{}"
                 else:
                     out[key] = "[]"
+            elif hasattr(value, "model_dump"):
+                out[key] = json.dumps(value.model_dump(mode="json"), ensure_ascii=False)
             elif isinstance(value, (dict, list)):
                 out[key] = json.dumps(value, ensure_ascii=False)
             else:

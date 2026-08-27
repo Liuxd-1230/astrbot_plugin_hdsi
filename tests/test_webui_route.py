@@ -35,8 +35,8 @@ class TestBackendRouteRegistration:
 
     def test_all_expected_endpoints(self):
         src = _main_src()
-        for ep in ("overview", "config", "participants", "script",
-                   "intents", "maintenance", "migrate_config"):
+        for ep in ("overview", "config", "characters/canon", "participants", "participants/clear_unread",
+                   "memory", "facts", "script", "intents", "maintenance", "migrate_config", "backup", "restore"):
             assert f"{{api}}/{ep}" in src, f"missing endpoint: {ep}"
 
 

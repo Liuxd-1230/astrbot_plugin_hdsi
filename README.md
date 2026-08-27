@@ -28,21 +28,20 @@ HDSI 以主角为中心维护持续剧情状态：角色拥有日程、关系、
 
 ## 核心能力
 
-- **Canonical Story**：一个机器人身份维护一个主剧本，多位参与者共享同一段生活，各自保留独立资料、关系与近期互动。
+- **Multi-Character Registry (多角色注册表与独立世界线)**：支持在一个 AstrBot 实例中创建、管理并并行运行多个独立角色。每个角色拥有独立的 `character_id`、主故事（Story）、独立 Canon 设定、参与者列表、长期记忆（Memory）、事实库（Facts）、演化层（Overlay）、情绪（Alter）与意图账本（Intents）。
+- **Authoritative Conversation Routing (权威会话路由)**：支持按平台（`platform_id`）、机器人账号（`self_id`）、会话类型（`friend` 私聊 / `group` 群聊 / `all` 全部）以及会话 ID 精准绑定角色。显式绑定的会话具有**绝对终止语义**（目标角色暂停或归档时直接停止响应，绝不会发生“身份跳人”串线切换至其他角色）；未绑定的会话默认走默认角色。
+- **Decoupled Canon & Global Config (设定与全局配置彻底解耦)**：角色 Canon（人设、背景、世界观、关系、时区、文风）直接绑定至单角色故事，全局配置仅管理模型与引擎参数，新建角色默认模板绝不再反向污染现有角色设定。
+- **Consistent Full-System Backup & Restore (一致性系统级备份与恢复)**：提供涵盖全部 13 张核心数据库表、完整剧本历史、所有角色设定及配置的一致性快照备份与事务级原子恢复。
+- **Participant Lifecycle & Cascade Purge (参与者生命周期与级联清理)**：支持参与者状态调整（active/paused/archived）、单独清空未读计数、重置运行状态，以及彻底级联销毁私有记忆与历史数据（Cascade Purge）。
 - **活跃场景 recentScript + continuitySnapshot**：近期上下文以原始剧本为主，低频快照负责跨时间衔接。
 - **回复模式**：immediate / silent（看见不回）/ unseen / delayed（到期后重新裁决，绝不发送预写台词）。
 - **首条回复提交边界**：首条气泡未提交前新输入作废旧生成并合并重写；提交后取消未发送的 `<sep/>` 后续气泡，未完成文字作为"被打断的念头"进入下一次写作。
 - **Auto Advance**：无对话时按真实时间补写角色生活，绝不伪造用户消息；休息窗口自动切换低频节奏。
-- **Conversation Follow-up / Reminder / Proactive Message**：对话后 10/20 分钟短期补写；提醒经 Intent 到期重新裁决；主动联系必须来自真实生活理由。
-- **Agency Window**：日程负荷 × 隐私 × 设备可用性的容量矩阵 + willingness 门槛 + 最小间隔；结果只能是立即联系 / `proactive-check` 重查 / 自然放下。
+- **Agency Window**：日程负荷 × 隐私 × 设备可用性的容量矩阵 + willingness 门槛 + 最小间隔。
 - **Alter System**：单维度氛围评分（-5..+5）、动态阈值、方向权重、后台侧端分析、自然衰减。
 - **Overlay**：设定演化先提案后应用，证据门槛（独立回合数 × 跨日期 × 置信度），分层压缩归档，可单独清理。
-- **Narrative Facts**：长期事实带来源条目（可审计）、置信度排序、可选 Embedding 语义检索与后台向量补齐。
-- **隐私隔离**：默认禁止把参与者 A 的原始私聊发给 B 的主模型上下文；跨参与者只共享受控摘要与全局后果。
-- **并发安全**：同一故事内所有写入严格串行；SQLite 全局写队列；过期模型结果直接丢弃。
-- **重启恢复**：重启后从数据库恢复 pending intent、自动推进时钟与分段消息，不重复发送。
-- **Vision**：开启后当前私聊图片作为多模态输入进入本轮叙事（不入库）。
-- **Web 观察可选**：只读、有界、带域名黑白名单与缓存的公开网页观察。
+- **Narrative Facts & Memory**：长期情景记忆与事实库带来源条目（可审计）、置信度排序、可选 Embedding 语义检索。
+- **并发安全与调度防饥饿**：直接 JOIN 活跃角色与故事，彻底防止孤儿故事挤占调度配额；SQLite 全局写队列保证事务原子性。
 
 ## 安装
 

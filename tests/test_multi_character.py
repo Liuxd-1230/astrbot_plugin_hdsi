@@ -487,3 +487,295 @@ async def test_participant_lifecycle_management(multi_harness):
     await db.execute("DELETE FROM interlude_participant WHERE id=?", (part.id,))
     deleted = await db.get("interlude_participant", {"id": part.id})
     assert len(deleted) == 0
+
+
+@pytest.mark.asyncio
+async def test_saving_character_b_canon_never_mutates_global_defaults(multi_harness):
+    service, db, clock = multi_harness
+
+    # Initial global story_defaults in config
+    service.config.story_defaults.character_name = "千"
+    service.config.story_defaults.world = "世界之树下的旧书店"
+
+    # Create Character Alice
+    char_alice = await service.create_character_record(
+        name="爱丽丝",
+        canon={"world": "魔界", "relationship": "魔女与使魔", "timezone": "UTC"},
+    )
+
+    # Alice story has its own setting
+    story_alice = await service.get_story(char_alice.story_id)
+    assert story_alice.setting.character.name == "爱丽丝"
+    assert story_alice.setting.world == "魔界"
+
+    # Global config's story_defaults MUST remain unchanged
+    assert service.config.story_defaults.character_name == "千"
+    assert service.config.story_defaults.world == "世界之树下的旧书店"
+
+    # Mutate Alice's setting directly
+    story_alice.setting.character.name = "爱丽丝·二世"
+    story_alice.setting.world = "魔界地下城"
+    await db.update("interlude_story", {"id": story_alice.id}, {
+        "setting": story_alice.setting.model_dump(mode="json"),
+    })
+
+    # Global defaults are still "千"
+    assert service.config.story_defaults.character_name == "千"
+    assert service.config.story_defaults.world == "世界之树下的旧书店"
+
+
+@pytest.mark.asyncio
+async def test_bound_paused_character_never_falls_back_to_default(multi_harness):
+    """Authoritative termination: if an explicit binding matches a character whose story
+    is paused/inactive, find_story_for_event MUST return None instead of falling back to default character.
+    """
+    service, db, clock = multi_harness
+
+    char_qian = await service.create_character_record(name="千", is_default=True)
+    char_alice = await service.create_character_record(name="爱丽丝", is_default=False)
+
+    # Bind QQ Group 12345 to Alice
+    await service.set_conversation_binding(
+        platform_id="aiocqhttp", self_id="10000", conversation_id="12345",
+        character_id=char_alice.id, conversation_type="group",
+    )
+
+    # When Alice is active, group 12345 routes to Alice
+    ev = IncomingEvent(
+        platform_id="aiocqhttp", self_id="10000", sender_id="999",
+        group_id="12345", message_type="GroupMessage", content="Hello Alice",
+    )
+    s = await service.find_story_for_event(ev)
+    assert s is not None
+    assert s.id == char_alice.story_id
+
+    # Archive / Pause Alice
+    await service.delete_or_archive_character(char_alice.id, purge_data=False)
+    char_alice_reloaded = await service.get_character(char_alice.id)
+    assert char_alice_reloaded.status == CharacterStatus.ARCHIVED
+
+    # Re-bind for test to simulate explicit binding to an archived/paused character
+    await service.set_conversation_binding(
+        platform_id="aiocqhttp", self_id="10000", conversation_id="12345",
+        character_id=char_alice.id, conversation_type="group",
+    )
+
+    # Routing MUST terminate and return None — ABSOLUTELY NO fallback to Qian!
+    s_paused = await service.find_story_for_event(ev)
+    assert s_paused is None, "Authoritative binding MUST terminate on unavailable target, not fallback to Qian!"
+
+
+@pytest.mark.asyncio
+async def test_friend_and_group_same_numeric_id_route_independently(multi_harness):
+    """ConversationBinding distinguishes conversation_type ('friend' vs 'group')."""
+    service, db, clock = multi_harness
+
+    char_qian = await service.create_character_record(name="千", is_default=True)
+    char_alice = await service.create_character_record(name="爱丽丝", is_default=False)
+    char_bob = await service.create_character_record(name="鲍勃", is_default=False)
+
+    # Bind Friend 55555 to Alice
+    await service.set_conversation_binding(
+        platform_id="aiocqhttp", self_id="10000", conversation_id="55555",
+        character_id=char_alice.id, conversation_type="friend",
+    )
+
+    # Bind Group 55555 to Bob
+    await service.set_conversation_binding(
+        platform_id="aiocqhttp", self_id="10000", conversation_id="55555",
+        character_id=char_bob.id, conversation_type="group",
+    )
+
+    # Friend message with ID 55555 -> routes to Alice
+    ev_friend = IncomingEvent(
+        platform_id="aiocqhttp", self_id="10000", sender_id="55555",
+        group_id="", message_type="FriendMessage", content="Private msg",
+    )
+    s_friend = await service.find_story_for_event(ev_friend)
+    assert s_friend is not None
+    assert s_friend.id == char_alice.story_id
+
+    # Group message with ID 55555 -> routes to Bob
+    ev_group = IncomingEvent(
+        platform_id="aiocqhttp", self_id="10000", sender_id="999",
+        group_id="55555", message_type="GroupMessage", content="Group msg",
+    )
+    s_group = await service.find_story_for_event(ev_group)
+    assert s_group is not None
+    assert s_group.id == char_bob.story_id
+
+
+@pytest.mark.asyncio
+async def test_participant_purge_removes_all_private_scoped_data(multi_harness):
+    service, db, clock = multi_harness
+    now = clock.now()
+
+    char = await service.create_character_record(name="千", is_default=True)
+    story = await service.get_story(char.story_id)
+
+    ev = IncomingEvent(
+        platform_id="aiocqhttp", self_id="10000", sender_id="20001",
+        sender_name="Alice", message_type="FriendMessage", content="Hello",
+    )
+    part = await service.ensure_participant(story, ev, now)
+
+    # Add memory and fact for this participant
+    await db.insert("interlude_memory", {
+        "story_id": story.id,
+        "participant_id": part.id,
+        "category": "fact",
+        "content": "Alice loves tea",
+        "importance": 0.8,
+        "status": "active",
+        "created_at": iso(now),
+        "updated_at": iso(now),
+    })
+    await db.insert("interlude_fact", {
+        "story_id": story.id,
+        "participant_id": part.id,
+        "scope": "relationship",
+        "content": "Alice is a close friend",
+        "importance": 0.8,
+        "confidence": 0.9,
+        "unresolved": 0,
+        "last_seen_at": iso(now),
+        "created_at": iso(now),
+        "updated_at": iso(now),
+    })
+    await db.insert("interlude_script_entry", {
+        "story_id": story.id,
+        "participant_id": part.id,
+        "kind": "user-message",
+        "actor": "user",
+        "content": "Hello",
+        "occurred_at": iso(now),
+        "metadata": "{}",
+        "created_at": iso(now),
+    })
+
+    # Verify rows exist
+    assert len(await db.get("interlude_memory", {"participant_id": part.id})) == 1
+    assert len(await db.get("interlude_fact", {"participant_id": part.id})) == 1
+    assert len(await db.get("interlude_script_entry", {"participant_id": part.id})) >= 1
+
+    # Cascade purge
+    stmts = [
+        ("DELETE FROM interlude_script_entry WHERE participant_id=?", (part.id,)),
+        ("DELETE FROM interlude_memory WHERE participant_id=?", (part.id,)),
+        ("DELETE FROM interlude_fact WHERE participant_id=?", (part.id,)),
+        ("DELETE FROM interlude_intent WHERE participant_id=?", (part.id,)),
+        ("DELETE FROM interlude_participant WHERE id=?", (part.id,)),
+    ]
+    await db.execute_many(stmts)
+
+    # Verify all participant-scoped rows are gone
+    assert len(await db.get("interlude_memory", {"participant_id": part.id})) == 0
+    assert len(await db.get("interlude_fact", {"participant_id": part.id})) == 0
+    assert len(await db.get("interlude_script_entry", {"participant_id": part.id})) == 0
+    assert len(await db.get("interlude_participant", {"id": part.id})) == 0
+
+
+@pytest.mark.asyncio
+async def test_active_stories_does_not_starve_registered_characters(multi_harness):
+    service, db, clock = multi_harness
+    now = clock.now()
+
+    # Create an orphan active story not in character registry
+    orphan_story = InterludeStory(
+        id="orphan:story:999",
+        platform_id="orphan",
+        self_id="orphan",
+        status="active",
+        setting=service.initial_story_setting("Orphan"),
+        state=empty_story_state(),
+        cursor_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    await db.insert("interlude_story", orphan_story.model_dump(mode="json"))
+
+    # Create a registered active character
+    char = await service.create_character_record(name="千", is_default=True)
+
+    # service.active_stories() should pick the registered character's story and not be crowded out
+    active = await service.active_stories()
+    active_ids = {s.id for s in active}
+    assert char.story_id in active_ids
+    assert orphan_story.id not in active_ids
+
+
+@pytest.mark.asyncio
+async def test_backup_restore_roundtrip_preserves_every_domain_table(multi_harness):
+    from hdsi.database.migrations import TABLES
+
+    service, db, clock = multi_harness
+    now = clock.now()
+
+    char = await service.create_character_record(name="千", is_default=True)
+    await service.set_conversation_binding("qq", "100", "888", char.id, "group")
+
+    mem_id = await db.insert_returning_id("interlude_memory", {
+        "story_id": char.story_id,
+        "participant_id": "",
+        "category": "fact",
+        "content": "千的咖啡杯是白色的",
+        "importance": 0.8,
+        "status": "active",
+        "created_at": iso(now),
+        "updated_at": iso(now),
+    })
+    assert isinstance(mem_id, int)
+
+    fact_id = await db.insert_returning_id("interlude_fact", {
+        "story_id": char.story_id,
+        "participant_id": "",
+        "scope": "world",
+        "content": "小镇有一个旧火车站",
+        "importance": 0.9,
+        "confidence": 0.95,
+        "unresolved": 0,
+        "last_seen_at": iso(now),
+        "created_at": iso(now),
+        "updated_at": iso(now),
+    })
+    assert isinstance(fact_id, int)
+
+    # Dump all tables
+    dump_tables = {}
+    for tbl in TABLES:
+        rows = await db.get(tbl, {})
+        dump_tables[tbl] = rows
+
+    assert len(dump_tables["interlude_character"]) == 1
+    assert len(dump_tables["interlude_conversation_binding"]) == 1
+    assert len(dump_tables["interlude_memory"]) == 1
+    assert len(dump_tables["interlude_fact"]) == 1
+
+    # Wipe tables
+    clear_stmts = [(f"DELETE FROM {tbl}", ()) for tbl in reversed(TABLES)]
+    await db.execute_many(clear_stmts)
+
+    for tbl in TABLES:
+        assert len(await db.get(tbl, {})) == 0
+
+    # Restore tables
+    for tbl in TABLES:
+        for r in dump_tables[tbl]:
+            await db.insert(tbl, r)
+
+    # Verify exact restore
+    restored_chars = await db.get("interlude_character", {})
+    assert len(restored_chars) == 1
+    assert restored_chars[0]["name"] == "千"
+
+    restored_bindings = await db.get("interlude_conversation_binding", {})
+    assert len(restored_bindings) == 1
+    assert restored_bindings[0]["conversation_type"] == "group"
+
+    restored_mems = await db.get("interlude_memory", {})
+    assert len(restored_mems) == 1
+    assert restored_mems[0]["content"] == "千的咖啡杯是白色的"
+
+    restored_facts = await db.get("interlude_fact", {})
+    assert len(restored_facts) == 1
+    assert restored_facts[0]["content"] == "小镇有一个旧火车站"
