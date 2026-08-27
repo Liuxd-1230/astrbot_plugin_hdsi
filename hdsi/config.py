@@ -75,7 +75,7 @@ class Prompts(BaseModel):
 
 class RuntimeConfig(BaseModel):
     capture_direct_messages: bool = True
-    auto_create: bool = False
+    auto_create: bool = True
     ignore_command_messages: bool = True
     allow_proactive_messages: bool = False
     proactive_willingness_threshold: float = Field(default=0.65, ge=0, le=1)

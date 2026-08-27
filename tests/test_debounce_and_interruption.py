@@ -30,8 +30,8 @@ async def test_01_rapid_message_debounce(harness):
     })
     for text in ("在吗", "我想问你个事", "很重要"):
         assert await h.service.receive(h.event(content=text))
-    ok = await wait_for(lambda: len(h.narrator.calls) >= 1)
-    assert ok, "narrator should be called once"
+    ok = await wait_for(lambda: len(h.sender.sent) >= 1)
+    assert ok, "message should be delivered"
     assert len(h.narrator.calls) == 1, f"expected one call, got {len(h.narrator.calls)}"
     assert "连续消息" in (h.narrator.calls[0]["user_message"] or "")
     entries = await h.service.recent_entries(story.id, 20)

@@ -522,7 +522,7 @@ def build_prompt_payload(
                 "summary": intent.summary,
                 "startedAt": iso(intent.not_before),
                 "effect": intent.payload.get("effect") if isinstance(intent.payload.get("effect"), str) else "",
-                "strength": intent.payload.get("strength") if isinstance(intent.payload.get("strength"), float) else 0.5,
+                "strength": intent.payload.get("strength") if isinstance(intent.payload.get("strength"), (int, float)) and not isinstance(intent.payload.get("strength"), bool) else 0.5,
                 "expiresAt": intent.payload.get("expiresAt") if isinstance(intent.payload.get("expiresAt"), str) else "",
             }
             for intent in request.active_consequences

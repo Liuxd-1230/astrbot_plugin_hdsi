@@ -46,7 +46,7 @@ from hdsi.migration import import_koishi_database
 async def main():
     db = Database("data/plugin_data/astrbot_plugin_hdsi/interlude.db")
     await db.connect()
-    counts = import_koishi_database("/path/to/koishi.db", db, overwrite=False)
+    counts = await import_koishi_database("/path/to/koishi.db", db, overwrite=False)
     print(counts)
     await db.close()
 

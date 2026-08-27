@@ -43,7 +43,7 @@ async def main() -> None:
     db = Database(plugin_data_dir() / "interlude.db")
     await db.connect()
     try:
-        counts = import_koishi_database(source, db, overwrite=args.overwrite)
+        counts = await import_koishi_database(source, db, overwrite=args.overwrite)
     finally:
         await db.close()
     total = sum(counts.values())

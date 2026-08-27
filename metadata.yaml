@@ -3,6 +3,6 @@ desc: HDS Interlude for AstrBot：持续叙事运行时。角色拥有独立于�
 display_name: HDS Interlude
 version: 1.0.0
 author: MomoiCore
-repo: https://github.com/MomoiCore/astrbot_plugin_hdsi
+repo: https://github.com/Liuxd-1230/astrbot_plugin_hdsi
 support_platforms: []
 astrbot_version: ">=4.27.0"

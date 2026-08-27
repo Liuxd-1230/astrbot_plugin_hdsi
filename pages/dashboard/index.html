@@ -5,24 +5,73 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HDS Interlude</title>
 <style>
-:root{--bg:#f7f8fa;--card:#fff;--border:#e2e6ea;--text:#1a1a2e;--sub:#666;--accent:#4f6ef7;--ok:#22a55f;--warn:#d4940;--err:#d32f2f}
-@media(prefers-color-scheme:dark){:root{--bg:#1a1a2e;--card:#222244;--border:#333355;--text:#e8e8f0;--sub:#aaaacc;--accent:#7b9cf7;--ok:#4dd88a;--warn:#f0c040;--err:#f06060}
-body{background:var(--bg);color:var(--text)}
-.field input,.field textarea,.field select{background:#2a2a4a;color:var(--text);border-color:var(--border)}
-.btn{background:var(--card);color:var(--text);border-color:var(--border)}
-.btn:hover{border-color:var(--accent);color:var(--accent)}
+:root{
+  --bg:#f7f8fa;
+  --card:#ffffff;
+  --input-bg:#f0f2f5;
+  --input-text:#1a1a2e;
+  --border:#e2e6ea;
+  --text:#1a1a2e;
+  --sub:#666666;
+  --accent:#4f6ef7;
+  --accent-light:#eef2ff;
+  --ok:#22a55f;
+  --warn:#d97706;
+  --err:#d32f2f;
 }
+
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg:#1a1a2e;
+    --card:#222244;
+    --input-bg:#2a2a4a;
+    --input-text:#e8e8f0;
+    --border:#333355;
+    --text:#e8e8f0;
+    --sub:#aaaacc;
+    --accent:#7b9cf7;
+    --accent-light:#2a2d55;
+    --ok:#4dd88a;
+    --warn:#f0c040;
+    --err:#f06060;
+  }
+  body{background:var(--bg);color:var(--text)}
+}
+
+html.dark, body.dark, [data-theme="dark"]{
+  --bg:#1a1a2e;
+  --card:#222244;
+  --input-bg:#2a2a4a;
+  --input-text:#e8e8f0;
+  --border:#333355;
+  --text:#e8e8f0;
+  --sub:#aaaacc;
+  --accent:#7b9cf7;
+  --accent-light:#2a2d55;
+  --ok:#4dd88a;
+  --warn:#f0c040;
+  --err:#f06060;
+}
+html.dark body, body.dark{background:var(--bg);color:var(--text)}
+
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.6}
-.wrap{max-width:720px;margin:0 auto;padding:20px 16px 60px}
+.wrap{max-width:760px;margin:0 auto;padding:20px 16px 60px}
 
 /* ---- header ---- */
-.header{margin-bottom:20px}
-.header h1{margin:0;font-size:20px;font-weight:600}
-.header .desc{color:var(--sub);font-size:13px;margin-top:2px}
+.header{margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+.header-title h1{margin:0;font-size:20px;font-weight:600}
+.header-title .desc{color:var(--sub);font-size:13px;margin-top:2px}
+
+/* ---- character bar ---- */
+.char-bar{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:10px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+.char-select-wrap{display:flex;align-items:center;gap:10px;flex:1;min-width:260px}
+.char-select-wrap label{font-weight:600;font-size:13px;color:var(--sub);white-space:nowrap;display:flex;align-items:center;gap:4px}
+.char-select-wrap select{padding:6px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-weight:500;font-family:inherit;background:var(--input-bg)!important;color:var(--input-text)!important;outline:none;cursor:pointer;flex:1;max-width:320px}
+.char-bar-actions{display:flex;align-items:center;gap:8px}
 
 /* ---- status banner ---- */
-.banner{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px}
+.banner{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px}
 .banner .dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
 .banner .dot.on{background:var(--ok)}
 .banner .dot.off{background:var(--err)}
@@ -30,62 +79,100 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"
 .banner .label{font-weight:500}
 .banner .detail{color:var(--sub);font-size:13px}
 
-/* ---- steps ---- */
-.steps{margin-bottom:24px}
-.step{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:10px;display:flex;gap:14px;align-items:flex-start}
-.step .num{width:28px;height:28px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:14px;flex-shrink:0;margin-top:2px}
-.step.done .num{background:var(--ok)}
-.step h3{margin:0 0 4px;font-size:15px;font-weight:600}
-.step p{margin:0;color:var(--sub);font-size:13px}
-.step code{background:#eef1f5;padding:2px 6px;border-radius:4px;font-family:monospace;font-size:13px;color:var(--accent)}
-.step .status-tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;margin-left:8px}
-.step .status-tag.ok{background:#e6f7ee;color:var(--ok)}
-.step .status-tag.todo{background:#fff3e0;color:#b8860b}
-
 /* ---- cards ---- */
-.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px}
-.card h2{margin:0 0 10px;font-size:15px;font-weight:600;display:flex;align-items:center;gap:6px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:14px}
+.card h2{margin:0 0 12px;font-size:15px;font-weight:600;display:flex;align-items:center;justify-content:space-between}
 .card h2 .icon{font-size:16px}
+.card h2 .actions-right{display:flex;gap:6px}
 
-/* ---- quick actions ---- */
+/* ---- quick actions & buttons ---- */
 .actions{display:flex;flex-wrap:wrap;gap:8px}
-.btn{padding:8px 16px;border-radius:8px;border:1px solid var(--border);cursor:pointer;font-size:13px;background:var(--card);transition:.15s}
+.btn{padding:7px 14px;border-radius:8px;border:1px solid var(--border);cursor:pointer;font-size:13px;background:var(--card);color:var(--text);transition:.15s;display:inline-flex;align-items:center;gap:5px;font-family:inherit}
 .btn:hover{border-color:var(--accent);color:var(--accent)}
-.btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-.btn.primary:hover{opacity:.9}
+.btn.sm{padding:4px 10px;font-size:12px;border-radius:6px}
+.btn.primary{background:var(--accent);color:#fff!important;border-color:var(--accent)}
+.btn.primary:hover{opacity:.9;color:#fff!important}
 .btn.danger{color:var(--err);border-color:#f5c6c6}
 .btn.danger:hover{background:#fef2f2}
-@media(prefers-color-scheme:dark){.step .status-tag.todo{background:#3a3020;color:#f0c040}.btn.danger{border-color:#553333}.btn.danger:hover{background:#3a2020}.card,.banner{background:var(--card);border-color:var(--border);color:var(--text)}.muted{color:var(--sub)}.toast{background:var(--accent);color:#fff}.info-row{border-color:var(--border)}}
+.btn.warn{color:var(--warn);border-color:#fbd38d}
+.btn.warn:hover{background:#fffaf0}
+@media(prefers-color-scheme:dark){
+  .btn.danger{border-color:#553333}
+  .btn.danger:hover{background:#3a2020}
+}
+html.dark .btn.danger{border-color:#553333}
+html.dark .btn.danger:hover{background:#3a2020}
 
 /* ---- info rows ---- */
-.info-row{display:flex;gap:8px;padding:6px 0;border-bottom:1px solid #f0f0f0;font-size:13px}
+.info-row{display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px}
 .info-row:last-child{border:none}
-.info-row .k{color:var(--sub);min-width:90px}
-.info-row .v{word-break:break-all}
+.info-row .k{color:var(--sub);min-width:110px}
+.info-row .v{word-break:break-all;flex:1}
+
+/* ---- badges ---- */
+.badge{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:500}
+.badge.default{background:#e0e7ff;color:#3730a3}
+.badge.ok{background:#dcfce7;color:#166534}
+.badge.warn{background:#fef3c7;color:#92400e}
+.badge.err{background:#fee2e2;color:#991b1b}
+@media(prefers-color-scheme:dark){
+  .badge.default{background:#2e3650!important;color:#7b9cf7!important}
+}
+html.dark .badge.default{background:#2e3650!important;color:#7b9cf7!important}
 
 /* ---- tabs ---- */
 .tabs{display:flex;gap:2px;margin-bottom:16px;border-bottom:1px solid var(--border);overflow-x:auto;padding-bottom:0}
 .tab{padding:8px 14px;border:none;background:none;cursor:pointer;color:var(--sub);font-size:13px;border-bottom:2px solid transparent;white-space:nowrap}
-.tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:500}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
 .tab:hover{color:var(--text)}
 
-/* ---- form ---- */
-.field{margin-bottom:10px}
-.field label{display:block;font-size:12px;color:var(--sub);margin-bottom:3px}
-.field input,.field textarea,.field select{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;background:#fafbfc;color:var(--text)}
-.field textarea{min-height:70px;resize:vertical}
-.field input:focus,.field textarea:focus{outline:none;border-color:var(--accent)}
-@media(prefers-color-scheme:dark){.field input,.field textarea,.field select{background:#2a2a4a;color:var(--text);border-color:var(--border)}
-.field input:focus,.field textarea:focus{border-color:var(--accent)}
+/* ---- form & inputs ---- */
+.field{margin-bottom:12px}
+.field label{display:block;font-size:12px;color:var(--sub);margin-bottom:4px;font-weight:500}
+.field input,.field textarea,.field select,select,textarea,input[type="text"],input[type="number"]{
+  width:100%;
+  padding:8px 10px;
+  border:1px solid var(--border)!important;
+  border-radius:8px;
+  font-size:13px;
+  font-family:inherit;
+  background:var(--input-bg)!important;
+  color:var(--input-text)!important;
+  transition:border-color .15s, background .15s;
 }
+.field textarea{min-height:70px;resize:vertical}
+.field input:focus,.field textarea:focus,.field select:focus,select:focus,textarea:focus,input:focus{outline:none;border-color:var(--accent)!important}
 
 /* ---- toast ---- */
-.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--text);color:#fff;padding:10px 22px;border-radius:99px;font-size:13px;opacity:0;transition:.3s;z-index:999;pointer-events:none}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--text);color:#fff;padding:10px 24px;border-radius:99px;font-size:13px;font-weight:500;opacity:0;transition:all .25s cubic-bezier(0.18, 0.89, 0.32, 1.28);z-index:999;pointer-events:none;box-shadow:0 4px 16px rgba(0,0,0,0.15)}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.ok{background:#22a55f;color:#fff;box-shadow:0 4px 16px rgba(34,165,95,0.35)}
+.toast.err{background:#d32f2f;color:#fff;box-shadow:0 4px 16px rgba(211,47,47,0.35)}
+@media(prefers-color-scheme:dark){
+  .toast.ok{background:#1b8a4c;color:#fff;box-shadow:0 4px 16px rgba(27,138,76,0.45)}
+  .toast.err{background:#b71c1c;color:#fff;box-shadow:0 4px 16px rgba(183,28,28,0.45)}
+}
+html.dark .toast.ok{background:#1b8a4c;color:#fff;box-shadow:0 4px 16px rgba(27,138,76,0.45)}
+html.dark .toast.err{background:#b71c1c;color:#fff;box-shadow:0 4px 16px rgba(183,28,28,0.45)}
 
-/* ---- collapsible ---- */
-details summary{cursor:pointer;font-size:13px;color:var(--sub);padding:6px 0;user-select:none}
-details summary:hover{color:var(--accent)}
+/* ---- modals ---- */
+.modal-backdrop{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:1000;opacity:0;pointer-events:none;transition:opacity .2s}
+.modal-backdrop.show{opacity:1;pointer-events:auto}
+.modal-box{background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:14px;width:90%;max-width:540px;max-height:85vh;overflow-y:auto;padding:20px;box-shadow:0 12px 32px rgba(0,0,0,0.25)}
+.modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-bottom:1px solid var(--border);padding-bottom:10px}
+.modal-head h3{margin:0;font-size:16px;font-weight:600}
+.modal-close{background:none;border:none;font-size:18px;cursor:pointer;color:var(--sub)}
+.modal-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;border-top:1px solid var(--border);padding-top:12px}
+
+/* ---- character cards ---- */
+.char-grid{display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px}
+.char-chip{background:var(--input-bg);border:1px solid var(--border);border-radius:10px;padding:12px;display:flex;justify-content:space-between;align-items:center;gap:10px}
+.char-chip.active-chip{border-color:var(--accent);background:var(--accent-light)}
+.char-meta-name{font-weight:600;font-size:14px;display:flex;align-items:center;gap:6px}
+.char-meta-desc{font-size:12px;color:var(--sub);margin-top:3px;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.char-actions-cell{display:flex;gap:6px;flex-shrink:0}
+
+/* ---- table & utilities ---- */
 .mono{font-family:ui-monospace,"SF Mono",monospace;font-size:12px}
 .muted{color:var(--sub);font-size:12px}
 </style>
@@ -93,11 +180,27 @@ details summary:hover{color:var(--accent)}
 <body>
 <div class="wrap">
   <div class="header">
-    <h1>幕间 · HDS Interlude</h1>
-    <div class="desc">角色拥有自己的生活，回复、沉默、延迟都是剧情的一部分</div>
+    <div class="header-title">
+      <h1>幕间 · HDS Interlude</h1>
+      <div class="desc">多角色独立世界线与生活叙事</div>
+    </div>
   </div>
 
-  <!-- status -->
+  <!-- Character Selector Bar -->
+  <div class="char-bar">
+    <div class="char-select-wrap">
+      <label for="char-select">🎭 当前角色:</label>
+      <select id="char-select" onchange="switchCharacter(this.value)">
+        <option value="">加载中…</option>
+      </select>
+    </div>
+    <div class="char-bar-actions">
+      <button class="btn sm" onclick="openNewCharModal()">➕ 新建角色</button>
+      <button class="btn sm" onclick="switchTab('characters')">🎭 角色与绑定</button>
+    </div>
+  </div>
+
+  <!-- status banner -->
   <div class="banner" id="banner">
     <div class="dot off" id="status-dot"></div>
     <div>
@@ -106,44 +209,28 @@ details summary:hover{color:var(--accent)}
     </div>
   </div>
 
-  <!-- quick start steps (shown when not fully set up) -->
-  <div class="steps" id="steps">
-    <div class="step" id="step-provider">
-      <div class="num">✓</div>
-      <div><h3>配置模型</h3><p>在 AstrBot → 服务提供商 页面添加一个 LLM（如 OpenAI / DeepSeek 等），并设为默认。</p></div>
-    </div>
-    <div class="step" id="step-init">
-      <div class="num">1</div>
-      <div>
-        <h3>创建角色剧本 <span class="status-tag todo" id="tag-init">待完成</span></h3>
-        <p>在聊天窗口发送 <code>hdsi init 角色名</code>，例如 <code>hdsi init 小明</code>。只需执行一次。</p>
-      </div>
-    </div>
-    <div class="step" id="step-chat">
-      <div class="num">2</div>
-      <div>
-        <h3>开始聊天 <span class="status-tag todo" id="tag-chat">待完成</span></h3>
-        <p>直接发送普通消息即可。角色可能立即回复、沉默或稍后回复——这些都是剧情的一部分。</p>
-      </div>
-    </div>
-  </div>
-
-  <!-- tabs for management -->
+  <!-- tabs -->
   <div class="tabs">
     <button class="tab active" data-tab="status">当前状态</button>
     <button class="tab" data-tab="canon">角色设定</button>
+    <button class="tab" data-tab="participants">参与者管理</button>
     <button class="tab" data-tab="memory">记忆与事实</button>
     <button class="tab" data-tab="script">剧情记录</button>
+    <button class="tab" data-tab="characters">角色与绑定</button>
     <button class="tab" data-tab="advanced">高级设置</button>
   </div>
 
   <div id="view"><div class="muted">加载中…</div></div>
 </div>
 
+<!-- Modal Container -->
+<div class="modal-backdrop" id="modal-backdrop" onclick="if(event.target===this)closeModal()">
+  <div class="modal-box" id="modal-box"></div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
-// Load bridge SDK; if unavailable (standalone preview), fall back gracefully.
 (function() {
   var s = document.createElement("script");
   s.src = "/api/v1/plugins/page-bridge-sdk.js";
@@ -154,6 +241,30 @@ details summary:hover{color:var(--accent)}
 <script>
 "use strict";
 const PLUGIN = "astrbot_plugin_hdsi";
+
+let CURRENT_CHAR_ID = "";
+let CHARACTERS_LIST = [];
+let DEFAULT_CHAR_ID = "";
+let CFG = null;
+
+function detectTheme() {
+  try {
+    const isDarkMedia = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    let isDarkParent = false;
+    try {
+      if (window.parent && window.parent.document) {
+        const pdoc = window.parent.document;
+        if (pdoc.documentElement.classList.contains("dark") || pdoc.body.classList.contains("dark")) {
+          isDarkParent = true;
+        }
+      }
+    } catch {}
+    if (isDarkMedia || isDarkParent) {
+      document.documentElement.classList.add("dark");
+    }
+  } catch {}
+}
+detectTheme();
 
 function normalizeEndpoint(e) { return String(e || "").replace(/^\/+/, ""); }
 
@@ -185,25 +296,99 @@ function table(headers, rows) {
   if (!rows || !rows.length) return '<span class="muted">暂无数据</span>';
   return `<table style="width:100%;border-collapse:collapse;font-size:13px">
     <thead><tr>${headers.map(h => `<th style="text-align:left;padding:6px 8px;color:var(--sub);font-weight:500;border-bottom:1px solid var(--border);font-size:12px">${esc(h)}</th>`).join("")}</tr></thead>
-    <tbody>${rows.map(r => `<tr>${r.map(c => `<td style="padding:6px 8px;border-bottom:1px solid #f0f0f0">${cell(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+    <tbody>${rows.map(r => `<tr>${r.map(c => `<td style="padding:6px 8px;border-bottom:1px solid var(--border)">${cell(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
 }
-function fmtTime(t) { if (!t) return "-"; try { return String(t).replace("T", " ").slice(0, 19); } catch { return t; } }
-function toast(msg, err) { const el = document.getElementById("toast"); el.textContent = msg; el.classList.add("show"); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove("show"), 3000); }
 
-let CFG = null;
-async function getConfig() {
-  if (!CFG) CFG = await apiGet("hdsi/config");
+// Timezone-aware local time formatter
+function fmtTime(t) {
+  if (!t) return "-";
+  try {
+    let s = String(t);
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(s) && !s.endsWith("Z") && !s.includes("+")) {
+      s += "Z";
+    }
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return String(t).replace("T", " ").slice(0, 19);
+    const pad = n => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  } catch {
+    return String(t).replace("T", " ").slice(0, 19);
+  }
+}
+
+function toast(msg, err = false) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.className = "toast show " + (err ? "err" : "ok");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.classList.remove("show"); }, 3000);
+}
+
+function openModal(html) {
+  const bd = document.getElementById("modal-backdrop");
+  document.getElementById("modal-box").innerHTML = html;
+  bd.classList.add("show");
+}
+function closeModal() {
+  document.getElementById("modal-backdrop").classList.remove("show");
+}
+
+async function getConfig(force = false) {
+  if (!CFG || force) {
+    CFG = await apiGet("hdsi/config", CURRENT_CHAR_ID ? { character_id: CURRENT_CHAR_ID } : {});
+  }
   return CFG;
+}
+
+// ---- character selection & refresh ----
+async function loadCharacters() {
+  try {
+    const data = await apiGet("hdsi/characters");
+    CHARACTERS_LIST = data?.characters || [];
+    DEFAULT_CHAR_ID = data?.defaultCharacterId || (CHARACTERS_LIST[0]?.id || "");
+    if (!CURRENT_CHAR_ID || !CHARACTERS_LIST.some(c => c.id === CURRENT_CHAR_ID)) {
+      CURRENT_CHAR_ID = DEFAULT_CHAR_ID || (CHARACTERS_LIST[0]?.id || "");
+    }
+    renderCharacterSelect();
+  } catch (e) {
+    console.warn("[hdsi] loadCharacters failed:", e);
+  }
+}
+
+function renderCharacterSelect() {
+  const sel = document.getElementById("char-select");
+  sel.innerHTML = CHARACTERS_LIST.map(c => {
+    const isDef = c.id === DEFAULT_CHAR_ID ? " [默认]" : "";
+    const isArch = c.status === "archived" ? " (已归档)" : "";
+    return `<option value="${esc(c.id)}"${c.id === CURRENT_CHAR_ID ? " selected" : ""}>${esc(c.name)}${isDef}${isArch}</option>`;
+  }).join("");
+}
+
+async function switchCharacter(charId) {
+  CURRENT_CHAR_ID = charId;
+  CFG = null;
+  renderCharacterSelect();
+  await updateBanner();
+  renderCurrent();
 }
 
 // ---- tab switching ----
 document.querySelectorAll(".tab").forEach(tab => {
-  tab.onclick = () => {
-    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-    tab.classList.add("active");
-    renderView(tab.dataset.tab);
-  };
+  tab.onclick = () => { switchTab(tab.dataset.tab); };
 });
+
+function switchTab(tabName) {
+  document.querySelectorAll(".tab").forEach(t => {
+    if (t.dataset.tab === tabName) t.classList.add("active");
+    else t.classList.remove("active");
+  });
+  renderView(tabName);
+}
+
+function renderCurrent() {
+  const activeTab = document.querySelector(".tab.active")?.dataset.tab || "status";
+  renderView(activeTab);
+}
 
 async function renderView(tab) {
   const view = document.getElementById("view");
@@ -211,60 +396,613 @@ async function renderView(tab) {
   try {
     if (tab === "status") await renderStatus(view);
     else if (tab === "canon") await renderCanon(view);
+    else if (tab === "participants") await renderParticipants(view);
     else if (tab === "memory") await renderMemory(view);
     else if (tab === "script") await renderScript(view);
+    else if (tab === "characters") await renderCharactersTab(view);
     else if (tab === "advanced") await renderAdvanced(view);
-  } catch (e) { view.innerHTML = `<div class="card"><p style="color:var(--err)">${esc(e.message)}</p></div>`; }
+  } catch (e) {
+    view.innerHTML = `<div class="card"><p style="color:var(--err)">${esc(e.message)}</p></div>`;
+  }
 }
 
-// ---- status tab ----
+// ---- 1. STATUS TAB ----
 async function renderStatus(view) {
-  const data = await apiGet("hdsi/overview");
-  if (!data?.story) { view.innerHTML = '<div class="card"><p>还没有故事。请在聊天中发送 <code>hdsi init 角色名</code> 创建。</p></div>'; return; }
+  const data = await apiGet("hdsi/overview", { character_id: CURRENT_CHAR_ID });
+  if (!data?.story) {
+    view.innerHTML = `<div class="card"><p>当前角色还没有故事或处于归档/暂停状态。</p>
+      <button class="btn primary" onclick="openNewCharModal()">创建新角色</button></div>`;
+    return;
+  }
   const s = data.story;
-  view.innerHTML = `<div class="card"><h2>📖 当前故事</h2>${[
-    ["主角", s.characterName], ["状态", s.status], ["参与者", s.participants + " 人"],
-    ["写到", fmtTime(s.cursorAt)], ["下次自动推进", fmtTime(s.automation?.nextAdvanceAt)],
-    ["主动联系", s.allowProactive ? "开启" : "关闭"],
-  ].map(([k, v]) => `<div class="info-row"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("")}</div>
+  const alterVal = s.alterSystem?.alterValue ?? 0;
+  const alterLabel = alterVal > 0 ? `+${alterVal.toFixed(1)} (轻松)` : alterVal < 0 ? `${alterVal.toFixed(1)} (严肃)` : `0.0 (基准)`;
+  const agencyLoad = s.agencyWindow?.activity_load || "正常";
 
-  <div class="card"><h2>⏳ 等待中的计划</h2>${table(["类型", "时间", "内容"], (data.pendingIntents || []).map(i => [i.type, fmtTime(i.notBefore), i.summary]))}</div>
+  view.innerHTML = `<div class="card">
+    <h2>📖 角色与世界线状态
+      <span class="badge ${s.status === 'active' ? 'ok' : 'warn'}">${esc(s.status)}</span>
+    </h2>
+    ${[
+      ["主角姓名", s.characterName],
+      ["故事 ID (Story ID)", s.id],
+      ["参与者", s.participants + " 人"],
+      ["当地时间", s.localTime || "-"],
+      ["已写到 (游标)", fmtTime(s.cursorAt)],
+      ["Alter 情绪", alterLabel],
+      ["Agency 负荷", agencyLoad],
+      ["下次自动推进", fmtTime(s.automation?.nextAdvanceAt)],
+      ["主动联系", s.allowProactive ? "开启" : "关闭"],
+    ].map(([k, v]) => `<div class="info-row"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("")}
+  </div>
 
-  <div class="card"><h2>📜 最近剧情</h2>${table(["时间", "内容"], (data.recentScript || []).slice(-6).map(e => [fmtTime(e.occurredAt), e.content]))}</div>`;
+  <div class="card">
+    <h2>⏳ 等待中的计划与意图</h2>
+    ${table(["类型", "触发时间 (当地)", "摘要"], (data.pendingIntents || []).map(i => [i.type, fmtTime(i.notBefore), i.summary]))}
+  </div>
+
+  <div class="card">
+    <h2>📜 最近剧情预览</h2>
+    ${table(["时间 (当地)", "内容"], (data.recentScript || []).slice(-8).map(e => [fmtTime(e.occurredAt), e.content]))}
+  </div>`;
 }
 
-// ---- canon tab ----
+// ---- 2. CANON TAB (Familiar layout) ----
 async function renderCanon(view) {
   await getConfig();
-  const d = CFG.story_defaults;
-  view.innerHTML = `<div class="card"><h2>🎭 角色设定（Canon）</h2>
-    <p class="muted">这是角色的起点设定。修改后建议在"高级设置"中清理对应 overlay。</p>
-    ${fld("story_defaults.character_name","角色名",d.character_name)}
-    ${fld("story_defaults.timezone","时区",d.timezone)}
-    ${ta("story_defaults.character_profile","角色背景（性格/日程/说话方式）",d.character_profile)}
-    ${ta("story_defaults.world","世界设定",d.world)}
-    ${ta("story_defaults.relationship","默认初始关系",d.relationship)}
+  const d = CFG.story_defaults || {};
+  const prompts = CFG.prompts || {};
+
+  view.innerHTML = `<div class="card">
+    <h2>🎭 角色设定（Canon）</h2>
+    <p class="muted">这是当前角色的起点设定。修改后建议在"高级设置"中清理对应 overlay。</p>
+    ${fld("story_defaults.character_name", "角色名", d.character_name || "")}
+    ${fld("story_defaults.timezone", "时区", d.timezone || "Asia/Shanghai")}
+    ${ta("story_defaults.character_profile", "角色背景（性格/日程/说话方式）", d.character_profile || "")}
+    ${ta("story_defaults.world", "世界设定", d.world || "")}
+    ${ta("story_defaults.relationship", "默认初始关系", d.relationship || "")}
     <button class="btn primary" onclick="saveConfigFromForms()">保存设定</button>
   </div>
-  <div class="card"><h2>✍️ 写作风格</h2>
-    ${ta("prompts.main_prompt","叙事指令",CFG.prompts.main_prompt)}
-    ${ta("prompts.style_prompt","文风",CFG.prompts.style_prompt)}
+  <div class="card">
+    <h2>✍️ 写作风格</h2>
+    ${ta("prompts.main_prompt", "叙事指令", prompts.main_prompt || "")}
+    ${ta("prompts.style_prompt", "文风", prompts.style_prompt || "")}
     <button class="btn primary" onclick="saveConfigFromForms()">保存风格</button>
   </div>`;
 }
 
+// ---- 3. PARTICIPANTS TAB (Full Lifecycle Management) ----
+async function renderParticipants(view) {
+  const list = await apiGet("hdsi/participants", { character_id: CURRENT_CHAR_ID }).catch(() => []);
+  const rows = (list || []).map(p => [
+    `<strong>${esc(p.displayName || p.personId || "-")}</strong><div class="muted" style="font-size:11px">ID: ${esc(p.personId || "")}</div>`,
+    esc(p.relationship || "默认"),
+    `<span class="mono" style="font-size:11px">${esc(p.umo || p.id || "-")}</span>`,
+    `<span class="badge ${p.status === 'active' ? 'ok' : 'warn'}">${esc(p.status)}</span>`,
+    p.state?.unread_message_count ?? 0,
+    {
+      html: `<div style="display:flex;gap:4px">
+        <button class="btn sm" onclick='openEditParticipantModal(${JSON.stringify(p).replace(/'/g, "&#39;")})'>编辑</button>
+        <button class="btn sm warn" onclick="resetParticipant('${esc(p.id)}')">重置</button>
+        <button class="btn sm danger" onclick="deleteParticipant('${esc(p.id)}')">移除</button>
+      </div>`
+    },
+  ]);
+  view.innerHTML = `<div class="card">
+    <h2>👥 当前角色参与者管理（生命周期）</h2>
+    <p class="muted">在此世界线中与主角产生互动的私聊好友及群成员。支持查看、编辑关系背景、重置未读与状态、或从故事中移除。</p>
+    ${table(["参与者", "关系描述", "会话标识", "状态", "未读数", "生命周期操作"], rows)}
+  </div>`;
+}
+
+function openEditParticipantModal(p) {
+  openModal(`
+    <div class="modal-head">
+      <h3>✏️ 编辑参与者【${esc(p.displayName || p.personId)}】</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="field"><label>显示昵称 (Display Name)</label>
+      <input type="text" id="modal-part-name" value="${esc(p.displayName || '')}">
+    </div>
+    <div class="field"><label>生命周期状态 (Lifecycle Status)</label>
+      <select id="modal-part-status">
+        <option value="active"${p.status === 'active' ? ' selected' : ''}>active (活跃)</option>
+        <option value="paused"${p.status === 'paused' ? ' selected' : ''}>paused (暂停/休眠)</option>
+        <option value="archived"${p.status === 'archived' ? ' selected' : ''}>archived (已归档)</option>
+      </select>
+    </div>
+    <div class="field"><label>人际关系描述 (Relationship with Protagonist)</label>
+      <textarea id="modal-part-rel" style="min-height:70px">${esc(p.relationship || '')}</textarea>
+    </div>
+    <div class="field"><label>参与者个人背景设定 (Profile)</label>
+      <textarea id="modal-part-profile" style="min-height:70px">${esc(p.profile || '')}</textarea>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn primary" onclick="submitEditParticipant('${esc(p.id)}')">保存变更</button>
+    </div>
+  `);
+}
+
+async function submitEditParticipant(id) {
+  const displayName = document.getElementById("modal-part-name").value.trim();
+  const status = document.getElementById("modal-part-status").value;
+  const relationship = document.getElementById("modal-part-rel").value.trim();
+  const profile = document.getElementById("modal-part-profile").value.trim();
+  try {
+    const res = await apiPost("hdsi/participants/update", {
+      id, display_name: displayName, status, relationship, profile,
+    });
+    toast(res.message || "更新成功 ✓");
+    closeModal();
+    renderCurrent();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function resetParticipant(id) {
+  if (!confirm(`确认重置参与者 ${id} 的未读消息计数与状态？`)) return;
+  try {
+    const res = await apiPost("hdsi/participants/reset", { id });
+    toast(res.message || "已重置 ✓");
+    renderCurrent();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function deleteParticipant(id) {
+  if (!confirm(`确认从当前故事中彻底移除参与者 ${id}？`)) return;
+  try {
+    const res = await apiPost("hdsi/participants/delete", { id });
+    toast(res.message || "已移除 ✓");
+    renderCurrent();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+// ---- 4. MEMORY & FACTS TAB ----
+async function renderMemory(view) {
+  const [facts, intents] = await Promise.all([
+    apiGet("hdsi/facts", { character_id: CURRENT_CHAR_ID }).catch(() => []),
+    apiGet("hdsi/intents", { character_id: CURRENT_CHAR_ID }).catch(() => []),
+  ]);
+
+  const factsRows = (facts || []).map(f => [
+    `<span class="badge default">${esc(f.scope)}</span>`,
+    esc(f.content),
+    f.importance != null ? f.importance.toFixed(2) : "-",
+    f.confidence != null ? f.confidence.toFixed(2) : "-",
+    { html: `<button class="btn sm danger" onclick="deleteFact(${f.id})">删除</button>` },
+  ]);
+
+  const intentsRows = (intents || []).map(i => [
+    esc(i.type),
+    fmtTime(i.not_before),
+    esc(String(i.summary || "").slice(0, 80)),
+    { html: `<button class="btn sm danger" onclick="cancelIntent(${i.id})">取消</button>` },
+  ]);
+
+  view.innerHTML = `<div class="card">
+    <h2>
+      <span>🧠 长期事实库 (Narrative Facts)</span>
+      <button class="btn sm primary" onclick="openNewFactModal()">➕ 添加事实</button>
+    </h2>
+    <p class="muted">角色自主提炼与沉淀的永久知识与事实。</p>
+    ${table(["领域", "内容", "重要度", "置信度", "操作"], factsRows)}
+  </div>
+
+  <div class="card">
+    <h2>⏳ 角色意图与计划 (Intents)</h2>
+    <p class="muted">角色未来即将推进或联系的计划。</p>
+    ${table(["类型", "触发时间 (当地)", "摘要", "操作"], intentsRows)}
+  </div>`;
+}
+
+function openNewFactModal() {
+  openModal(`
+    <div class="modal-head">
+      <h3>➕ 新增事实</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="field"><label>作用域 (Scope)</label>
+      <select id="modal-fact-scope">
+        <option value="world">world (世界/环境事实)</option>
+        <option value="character">character (主角相关事实)</option>
+        <option value="relationship">relationship (人际关系事实)</option>
+      </select>
+    </div>
+    <div class="field"><label>事实内容</label>
+      <textarea id="modal-fact-content" placeholder="例如：千喜欢在下雨天喝热咖啡。" style="min-height:80px"></textarea>
+    </div>
+    <div class="field"><label>重要度 (0.0 ~ 1.0)</label>
+      <input type="number" id="modal-fact-importance" step="0.1" min="0" max="1" value="0.7">
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn primary" onclick="submitNewFact()">保存</button>
+    </div>
+  `);
+}
+
+async function submitNewFact() {
+  const content = document.getElementById("modal-fact-content").value.trim();
+  if (!content) return alert("内容不能为空");
+  const scope = document.getElementById("modal-fact-scope").value;
+  const importance = parseFloat(document.getElementById("modal-fact-importance").value) || 0.5;
+  try {
+    await apiPost("hdsi/facts/create", { character_id: CURRENT_CHAR_ID, content, scope, importance });
+    toast("事实已添加 ✓");
+    closeModal();
+    renderCurrent();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function deleteFact(id) {
+  if (!confirm(`确认删除事实 #${id}？`)) return;
+  try {
+    await apiPost("hdsi/facts/delete", { id });
+    toast("事实已删除 ✓");
+    renderCurrent();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function cancelIntent(id) {
+  if (!confirm(`确认取消意图 #${id}？`)) return;
+  try {
+    await apiPost("hdsi/maintenance", { action: "cancel_intent", arg: String(id), character_id: CURRENT_CHAR_ID });
+    toast("意图已取消 ✓");
+    renderCurrent();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+// ---- 5. SCRIPT TAB ----
+let scriptOffset = 0;
+async function renderScript(view) {
+  const rows = await apiGet("hdsi/script", { limit: 30, offset: scriptOffset, character_id: CURRENT_CHAR_ID }).catch(() => []);
+  view.innerHTML = `<div class="card">
+    <h2>📜 剧情记录（真实事件日志）</h2>
+    <div style="margin-bottom:10px;display:flex;justify-content:space-between">
+      <div>
+        <button class="btn sm" onclick="scriptOffset=Math.max(0,scriptOffset-30);renderCurrent()">← 上一页</button>
+        <button class="btn sm" onclick="scriptOffset+=30;renderCurrent()">下一页 →</button>
+      </div>
+      <span class="muted">Offset: ${scriptOffset}</span>
+    </div>
+    ${table(["时间 (当地)", "主体", "内容"],
+      (rows || []).reverse().map(e => [
+        fmtTime(e.occurred_at),
+        e.kind === "character-message" ? "角色" : e.kind === "user-message" ? "用户" : e.actor,
+        e.content,
+      ]))}
+  </div>`;
+}
+
+// ---- 6. CHARACTERS & BINDINGS TAB ----
+async function renderCharactersTab(view) {
+  const [charsData, bindingsData] = await Promise.all([
+    apiGet("hdsi/characters"),
+    apiGet("hdsi/bindings"),
+  ]);
+  const chars = charsData?.characters || [];
+  const bindings = bindingsData?.bindings || [];
+
+  const charCardsHtml = chars.map(c => {
+    const isDef = c.id === DEFAULT_CHAR_ID;
+    const isCur = c.id === CURRENT_CHAR_ID;
+    const isArch = c.status === 'archived';
+    return `<div class="char-chip ${isCur ? 'active-chip' : ''}">
+      <div>
+        <div class="char-meta-name">
+          ${esc(c.name)}
+          ${isDef ? '<span class="badge default">默认</span>' : ''}
+          ${isArch ? '<span class="badge warn">已归档</span>' : '<span class="badge ok">活跃</span>'}
+          ${isCur ? '<span class="badge ok">当前选中</span>' : ''}
+        </div>
+        <div class="char-meta-desc">${esc(c.description || "无简介")}</div>
+        <div class="muted" style="margin-top:3px;font-size:11px">角色 ID: <span class="mono">${esc(c.id)}</span> | 故事 ID: <span class="mono">${esc(c.story_id)}</span></div>
+      </div>
+      <div class="char-actions-cell">
+        ${!isCur ? `<button class="btn sm" onclick="switchCharacter('${esc(c.id)}')">切换</button>` : ''}
+        ${!isDef ? `<button class="btn sm" onclick="setDefaultCharacter('${esc(c.id)}')">设为默认</button>` : ''}
+        ${!isArch ? `<button class="btn sm warn" onclick="toggleCharStatus('${esc(c.id)}', 'archived')">归档</button>` : `<button class="btn sm ok" onclick="toggleCharStatus('${esc(c.id)}', 'active')">激活</button>`}
+        <button class="btn sm" onclick="openCloneModal('${esc(c.id)}', '${esc(c.name)}')">复制</button>
+        <button class="btn sm" onclick="exportChar('${esc(c.id)}')">导出</button>
+        <button class="btn sm danger" onclick="deleteChar('${esc(c.id)}')">删除</button>
+      </div>
+    </div>`;
+  }).join("");
+
+  const bindingRows = bindings.map(b => [
+    esc(b.platform_id || "*"),
+    esc(b.self_id || "*"),
+    esc(b.conversation_id || "*"),
+    `<strong>${esc(b.characterName || b.character_id)}</strong>`,
+    { html: `<button class="btn sm danger" onclick="deleteBinding('${esc(b.platform_id)}','${esc(b.self_id)}','${esc(b.conversation_id)}')">解绑</button>` },
+  ]);
+
+  view.innerHTML = `<div class="card">
+    <h2>
+      <span>🎭 角色生命周期管理 (Character Registry)</span>
+      <div class="actions-right">
+        <button class="btn sm primary" onclick="openNewCharModal()">➕ 新建角色</button>
+        <button class="btn sm" onclick="openImportModal()">📥 导入角色</button>
+      </div>
+    </h2>
+    <div class="char-grid">${charCardsHtml}</div>
+  </div>
+
+  <div class="card">
+    <h2>
+      <span>🔗 会话绑定路由 (Conversation Routing)</span>
+      <button class="btn sm primary" onclick="openNewBindingModal()">➕ 添加会话绑定</button>
+    </h2>
+    <p class="muted">将特定 QQ 群、私聊会话或平台机器人精准路由至指定角色。未绑定的会话将自动使用默认角色。</p>
+    ${table(["平台", "Bot ID", "会话/群号", "绑定角色", "操作"], bindingRows)}
+  </div>`;
+}
+
+function openNewCharModal() {
+  openModal(`
+    <div class="modal-head">
+      <h3>➕ 新建独立角色</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="field"><label>角色名称 *</label>
+      <input type="text" id="modal-new-name" placeholder="例如：爱丽丝">
+    </div>
+    <div class="field"><label>角色简介 / 性格背景</label>
+      <textarea id="modal-new-desc" placeholder="简短描述角色的身份与性格特征" style="min-height:70px"></textarea>
+    </div>
+    <div class="field"><label>世界设定 (可选)</label>
+      <textarea id="modal-new-world" placeholder="角色所处的世界观与生活环境" style="min-height:50px"></textarea>
+    </div>
+    <div class="field"><label><input type="checkbox" id="modal-new-default" style="width:auto;margin-right:6px"> 设为默认角色</label></div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn primary" onclick="submitNewChar()">创建角色</button>
+    </div>
+  `);
+}
+
+async function submitNewChar() {
+  const name = document.getElementById("modal-new-name").value.trim();
+  if (!name) return alert("角色名称不能为空");
+  const desc = document.getElementById("modal-new-desc").value.trim();
+  const world = document.getElementById("modal-new-world").value.trim();
+  const isDefault = document.getElementById("modal-new-default").checked;
+  try {
+    const res = await apiPost("hdsi/characters/create", {
+      name, description: desc, is_default: isDefault,
+      canon: { character: { name, profile: desc }, world },
+    });
+    toast(res.message || "角色创建成功 ✓");
+    closeModal();
+    await loadCharacters();
+    if (res.data?.id) CURRENT_CHAR_ID = res.data.id;
+    await updateBanner();
+    renderCurrent();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function toggleCharStatus(charId, targetStatus) {
+  try {
+    await apiPost("hdsi/characters/update", { character_id: charId, status: targetStatus });
+    toast(`角色已${targetStatus === 'archived' ? '归档' : '激活'} ✓`);
+    await loadCharacters();
+    renderCurrent();
+  } catch (e) { toast(e.message, true); }
+}
+
+function openCloneModal(charId, charName) {
+  openModal(`
+    <div class="modal-head">
+      <h3>📋 复制角色</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <p class="muted">将复制【${esc(charName)}】的全部 Canon 设定，并创建一个全新的独立故事。</p>
+    <div class="field"><label>新角色名称</label>
+      <input type="text" id="modal-clone-name" value="${esc(charName)} (副本)">
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn primary" onclick="submitCloneChar('${esc(charId)}')">确认复制</button>
+    </div>
+  `);
+}
+
+async function submitCloneChar(charId) {
+  const newName = document.getElementById("modal-clone-name").value.trim();
+  if (!newName) return alert("名称不能为空");
+  try {
+    const res = await apiPost("hdsi/characters/clone", { character_id: charId, name: newName });
+    toast(res.message || "复制成功 ✓");
+    closeModal();
+    await loadCharacters();
+    renderCurrent();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function setDefaultCharacter(charId) {
+  try {
+    await apiPost("hdsi/characters/set_default", { character_id: charId });
+    toast("已设为默认角色 ✓");
+    await loadCharacters();
+    renderCurrent();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteChar(charId) {
+  if (!confirm(`确认删除或归档角色 ${charId}？`)) return;
+  const purge = confirm("是否彻底清除该角色的所有剧本历史与记忆？\n[确定]=彻底清除数据，[取消]=仅归档角色");
+  try {
+    const res = await apiPost("hdsi/characters/delete", { character_id: charId, purge_data: purge });
+    toast(res.message || "操作完成 ✓");
+    await loadCharacters();
+    renderCurrent();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function exportChar(charId) {
+  try {
+    const data = await apiGet("hdsi/characters/export", { character_id: charId });
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `hdsi_char_${charId}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast("配置已导出 ✓");
+  } catch (e) { toast(e.message, true); }
+}
+
+function openImportModal() {
+  openModal(`
+    <div class="modal-head">
+      <h3>📥 导入角色配置</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="field"><label>粘贴角色 JSON 数据</label>
+      <textarea id="modal-import-json" placeholder='{"character": {...}, "canon": {...}}' style="min-height:120px"></textarea>
+    </div>
+    <div class="field"><label>名称重命名 (可选)</label>
+      <input type="text" id="modal-import-name" placeholder="留空使用 JSON 内预设名称">
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn primary" onclick="submitImportChar()">导入</button>
+    </div>
+  `);
+}
+
+async function submitImportChar() {
+  try {
+    const raw = document.getElementById("modal-import-json").value.trim();
+    const payload = JSON.parse(raw);
+    const nameOverride = document.getElementById("modal-import-name").value.trim();
+    const res = await apiPost("hdsi/characters/import", { payload, name_override: nameOverride || undefined });
+    toast(res.message || "导入成功 ✓");
+    closeModal();
+    await loadCharacters();
+    renderCurrent();
+  } catch (e) { toast(e.message, true); }
+}
+
+function openNewBindingModal() {
+  const options = CHARACTERS_LIST.map(c => `<option value="${esc(c.id)}">${esc(c.name)} (${esc(c.id)})</option>`).join("");
+  openModal(`
+    <div class="modal-head">
+      <h3>🔗 添加会话绑定</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="field"><label>目标角色 *</label>
+      <select id="modal-bind-char">${options}</select>
+    </div>
+    <div class="field"><label>平台 (Platform ID，如 aiocqhttp / qq_official / webchat，通配填 *)</label>
+      <input type="text" id="modal-bind-platform" placeholder="例如：aiocqhttp 或 qq_official">
+    </div>
+    <div class="field"><label>机器人 ID (Bot Self ID，通配留空或填 *)</label>
+      <input type="text" id="modal-bind-self" placeholder="例如：10001">
+    </div>
+    <div class="field"><label>会话 ID (群号或好友账号，通配填 *) *</label>
+      <input type="text" id="modal-bind-conv" placeholder="例如群号 123456789 或 *">
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn primary" onclick="submitNewBinding()">保存绑定</button>
+    </div>
+  `);
+}
+
+async function submitNewBinding() {
+  const charId = document.getElementById("modal-bind-char").value;
+  const platform = document.getElementById("modal-bind-platform").value.trim();
+  const selfId = document.getElementById("modal-bind-self").value.trim();
+  const convId = document.getElementById("modal-bind-conv").value.trim();
+  if (!charId || !convId) return alert("必须指定角色与会话 ID");
+  try {
+    await apiPost("hdsi/bindings/save", {
+      platform_id: platform, self_id: selfId, conversation_id: convId, character_id: charId,
+    });
+    toast("绑定成功 ✓");
+    closeModal();
+    renderCurrent();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteBinding(platform, selfId, convId) {
+  if (!confirm(`确认解绑会话 ${convId}？`)) return;
+  try {
+    await apiPost("hdsi/bindings/delete", { platform_id: platform, self_id: selfId, conversation_id: convId });
+    toast("已解绑 ✓");
+    renderCurrent();
+  } catch (e) { toast(e.message, true); }
+}
+
+// ---- 7. ADVANCED TAB ----
+async function renderAdvanced(view) {
+  await getConfig();
+  view.innerHTML = `
+  <div class="card"><h2>⚙️ 运行参数 (全局)</h2>
+    <p class="muted">多角色共享的全局叙事引擎参数。</p>
+    ${fld("runtime.auto_advance_interval_minutes","自动推进间隔（分钟）",CFG.runtime?.auto_advance_interval_minutes ?? 120)}
+    ${fld("runtime.user_message_debounce_seconds","消息合并等待（秒）",CFG.runtime?.user_message_debounce_seconds ?? 1)}
+    ${sel("runtime.allow_proactive_messages","允许主动联系",CFG.runtime?.allow_proactive_messages ?? false)}
+    <button class="btn primary" onclick="saveConfigFromForms()">保存参数</button>
+  </div>
+  <div class="card"><h2>🔧 当前角色维护操作</h2>
+    <div class="actions">
+      <button class="btn" onclick="maint('advance')">手动推进当前剧情</button>
+      <button class="btn" onclick="maint('compact')">整理当前角色记忆</button>
+      <button class="btn" onclick="maint('rebuild_continuity')">重建当前连续性</button>
+      <button class="btn" onclick="backupSystem()">📦 完整系统备份</button>
+    </div>
+  </div>
+  <div class="card"><h2>⚠️ 危险操作</h2>
+    <p class="muted">针对当前选中角色生效。</p>
+    <div class="actions">
+      <button class="btn danger" onclick="clearOverlay('all')">清除当前角色设定演化</button>
+      <button class="btn danger" onclick="resetStory()">重置当前角色全部数据</button>
+    </div>
+  </div>
+  <div class="card"><h2>📥 从 Koishi 版迁移</h2>
+    <p class="muted">粘贴原 HDS-Interlude 的 JSON 配置即可自动映射并写入当前角色。</p>
+    <div class="field"><textarea id="koishi-json" placeholder='{"storyDefaults": {...}}' style="min-height:100px"></textarea></div>
+    <button class="btn" onclick="importKoishi()">导入配置</button>
+  </div>`;
+}
+
 function fld(path, label, value) {
-  return `<div class="field"><label>${esc(label)}</label><input type="text" data-path="${esc(path)}" value="${esc(value)}"></div>`;
+  return `<div class="field"><label>${esc(label)}</label><input type="text" id="${esc(path)}" data-path="${esc(path)}" value="${esc(value)}"></div>`;
 }
 function ta(path, label, value) {
-  return `<div class="field"><label>${esc(label)}</label><textarea data-path="${esc(path)}">${esc(value)}</textarea></div>`;
+  return `<div class="field"><label>${esc(label)}</label><textarea id="${esc(path)}" data-path="${esc(path)}">${esc(value)}</textarea></div>`;
+}
+function sel(path, label, value) {
+  return `<div class="field"><label>${esc(label)}</label><select id="${esc(path)}" data-path="${esc(path)}">
+    <option value="true"${value ? " selected" : ""}>开启</option>
+    <option value="false"${!value ? " selected" : ""}>关闭</option></select></div>`;
 }
 
 async function saveConfigFromForms() {
-  const patch = collectFormValues(document.getElementById("view"));
-  await apiPost("hdsi/config", patch);
-  CFG = null;
-  toast("已保存 ✓");
+  try {
+    const patch = collectFormValues(document.getElementById("view"));
+    await apiPost("hdsi/config", { ...patch, character_id: CURRENT_CHAR_ID });
+    CFG = null;
+    toast("已保存 ✓");
+    await updateBanner();
+  } catch (e) {
+    toast(e.message || "保存失败", true);
+  }
 }
 
 function coerceScalarList(text) {
@@ -299,92 +1037,41 @@ function collectFormValues(root) {
     const parts = el.dataset.path.split(".");
     let node = raw;
     while (parts.length > 1) { node[parts[0]] = node[parts[0]] || {}; node = node[parts.shift()]; }
-    node[parts[0]] = el.type === "number" ? Number(el.value) : el.value;
+    node[parts[0]] = el.type === "number" ? Number(el.value) : (el.value === "true" ? true : el.value === "false" ? false : el.value);
   });
   return reconcile(raw, CFG);
 }
 
-// ---- memory tab ----
-async function renderMemory(view) {
-  const intents = await apiGet("hdsi/intents").catch(() => []);
-  view.innerHTML = `<div class="card"><h2>🧠 记忆与计划</h2>
-    <p class="muted">角色会记住重要的对话，并在之后的剧情中自然提起。</p>
-    ${table(["类型", "时间", "摘要"], (intents || []).map(i => [i.type, fmtTime(i.not_before), String(i.summary).slice(0, 80)]))}
-  </div>`;
-}
-
-// ---- script tab ----
-let scriptOffset = 0;
-async function renderScript(view) {
-  const rows = await apiGet("hdsi/script", { limit: 30, offset: scriptOffset });
-  view.innerHTML = `<div class="card"><h2>📜 剧情记录（真实事件日志）</h2>
-    <div style="margin-bottom:10px">
-      <button class="btn" onclick="scriptOffset=Math.max(0,scriptOffset-30);renderCurrent()">← 上一页</button>
-      <button class="btn" onclick="scriptOffset+=30;renderCurrent()">下一页 →</button>
-    </div>
-    ${table(["时间", "谁", "内容"],
-      (rows || []).reverse().map(e => [fmtTime(e.occurred_at),
-        e.kind === "character-message" ? "角色" : e.kind === "user-message" ? "用户" : e.actor,
-        e.content]))}
-  </div>`;
-}
-function renderCurrent() { renderView(document.querySelector(".tab.active").dataset.tab); }
-
-// ---- advanced tab ----
-async function renderAdvanced(view) {
-  await getConfig();
-  view.innerHTML = `
-  <div class="card"><h2>⚙️ 运行参数</h2>
-    <p class="muted">以下参数通常保持默认即可。</p>
-    ${fld("runtime.auto_advance_interval_minutes","自动推进间隔（分钟）",CFG.runtime.auto_advance_interval_minutes)}
-    ${fld("runtime.user_message_debounce_seconds","消息合并等待（秒）",CFG.runtime.user_message_debounce_seconds)}
-    ${sel("runtime.allow_proactive_messages","允许主动联系",CFG.runtime.allow_proactive_messages)}
-    <button class="btn primary" onclick="saveConfigFromForms()">保存</button>
-  </div>
-  <div class="card"><h2>🔧 维护操作</h2>
-    <div class="actions">
-      <button class="btn" onclick="maint('advance')">手动推进剧情</button>
-      <button class="btn" onclick="maint('compact')">整理记忆</button>
-      <button class="btn" onclick="maint('rebuild_continuity')">重建连续性</button>
-    </div>
-  </div>
-  <div class="card"><h2>⚠️ 危险操作</h2>
-    <p class="muted">以下操作不可逆，请确认后再点击。</p>
-    <div class="actions">
-      <button class="btn danger" onclick="clearOverlay('all')">清除全部演化</button>
-      <button class="btn danger" onclick="resetStory()">重置全部数据</button>
-    </div>
-  </div>
-  <div class="card"><h2>📥 从 Koishi 版迁移</h2>
-    <p class="muted">粘贴原 HDS-Interlude 的 JSON 配置即可自动映射。</p>
-    <div class="field"><textarea id="koishi-json" placeholder='{"storyDefaults": {...}}' style="min-height:100px"></textarea></div>
-    <button class="btn" onclick="importKoishi()">导入配置</button>
-  </div>`;
-}
-
-function sel(path, label, value) {
-  return `<div class="field"><label>${esc(label)}</label><select data-path="${esc(path)}">
-    <option value="true"${value ? " selected" : ""}>开启</option>
-    <option value="false"${!value ? " selected" : ""}>关闭</option></select></div>`;
-}
-
 async function clearOverlay(target) {
-  if (!confirm(`确认清除 ${target} overlay？剧本和记忆不会删除。`)) return;
-  if (!confirm("再次确认？")) return;
-  const r = await apiPost("hdsi/maintenance", { action: "clear_overlay", arg: target });
+  if (!confirm(`确认清除当前角色的 ${target} overlay？剧本和记忆不会删除。`)) return;
+  const r = await apiPost("hdsi/maintenance", { action: "clear_overlay", arg: target, character_id: CURRENT_CHAR_ID });
   toast(r.message || "完成"); renderCurrent();
 }
 
 async function resetStory() {
-  if (!confirm("确认重置全部剧本、记忆与角色？此操作不可逆！")) return;
-  if (!confirm("最后确认：所有数据将被删除！")) return;
+  if (!confirm("确认重置当前角色的全部剧本、记忆与事实？此操作不可逆！")) return;
+  if (!confirm("最后确认：当前角色所有数据将被清空！")) return;
   await maint("purge");
 }
 
 async function maint(action, arg) {
   try {
-    const r = await apiPost("hdsi/maintenance", { action, arg });
-    toast(r.message || "已完成"); refreshAll();
+    const r = await apiPost("hdsi/maintenance", { action, arg, character_id: CURRENT_CHAR_ID });
+    toast(r.message || "已完成"); CFG = null; renderCurrent();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function backupSystem() {
+  try {
+    const data = await apiGet("hdsi/backup");
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `hdsi_backup_${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast("完整系统备份已导出 ✓");
   } catch (e) { toast(e.message, true); }
 }
 
@@ -392,40 +1079,27 @@ async function importKoishi() {
   try {
     const raw = document.getElementById("koishi-json").value;
     const koishi = JSON.parse(raw);
-    const r = await apiPost("hdsi/migrate_config", { koishi_config: koishi });
+    const r = await apiPost("hdsi/migrate_config", { koishi_config: koishi, character_id: CURRENT_CHAR_ID });
     toast(r.message || "导入成功"); CFG = null; renderCurrent();
   } catch (e) { toast(e.message, true); }
 }
 
-async function refreshAll() { CFG = null; renderCurrent(); }
-
-// ---- boot & status update ----
-async function updateBannerAndSteps() {
+// ---- status update ----
+async function updateBanner() {
   try {
-    const data = await apiGet("hdsi/overview");
+    const data = await apiGet("hdsi/overview", { character_id: CURRENT_CHAR_ID });
     const dot = document.getElementById("status-dot");
     const label = document.getElementById("status-label");
     const detail = document.getElementById("status-detail");
 
     if (data?.story) {
       dot.className = "dot on";
-      label.textContent = `✅ ${data.story.characterName} 的故事正在运行`;
+      label.textContent = `✅ 【${data.story.characterName}】故事运行中 (Story: ${data.story.id})`;
       detail.textContent = `${data.story.status} | 参与者 ${data.story.participants} 人 | 游标 ${fmtTime(data.story.cursorAt)}`;
-      document.getElementById("tag-init").textContent = "已完成";
-      document.getElementById("tag-init").className = "status-tag ok";
-      document.getElementById("step-init").classList.add("done");
-      document.getElementById("step-init").querySelector(".num").textContent = "✓";
-      if ((data.recentScript || []).some(e => e.kind === "character-message")) {
-        document.getElementById("tag-chat").textContent = "进行中";
-        document.getElementById("tag-chat").className = "status-tag ok";
-        document.getElementById("step-chat").classList.add("done");
-        document.getElementById("step-chat").querySelector(".num").textContent = "✓";
-      }
-      document.getElementById("steps").style.display = "none";
     } else {
       dot.className = "dot warn";
-      label.textContent = "尚未开始";
-      detail.textContent = "按下方步骤操作即可开始";
+      label.textContent = "当前角色无活动故事";
+      detail.textContent = "请切换至其他角色或创建新角色";
     }
   } catch (e) {
     document.getElementById("status-dot").className = "dot off";
@@ -435,19 +1109,22 @@ async function updateBannerAndSteps() {
 }
 
 (async function boot() {
-  document.querySelectorAll(".tab")[0].classList.add("active");
-  // Wait up to 2s for bridge to become available (postMessage handshake).
+  // Wait up to 2s for bridge
   for (var i = 0; i < 20; i++) {
     if (window.AstrBotPluginPage?.apiGet) break;
     await new Promise(r => setTimeout(r, 100));
   }
-  try { await updateBannerAndSteps(); } catch(e) {
-    console.warn("[hdsi] initial status failed:", e);
+  try {
+    await loadCharacters();
+    await updateBanner();
+  } catch (e) {
+    console.warn("[hdsi] initial boot error:", e);
   }
-  try { renderView("status"); } catch(e) {
+  try {
+    renderView("status");
+  } catch (e) {
     document.getElementById("view").innerHTML =
-      '<div class="card"><p style="color:var(--err)">加载失败：' + esc(e.message) +
-      '</p><p class="muted">请确认已登录 AstrBot 仪表板，且插件已启用。</p></div>';
+      '<div class="card"><p style="color:var(--err)">加载失败：' + esc(e.message) + '</p></div>';
   }
 })();
 </script>

@@ -280,7 +280,7 @@ def _normalize_value(value: Any) -> Any:
     return value
 
 
-def import_koishi_database(
+async def import_koishi_database(
     koishi_db_path: str | Path,
     target_database: Any,
     *,
@@ -308,13 +308,13 @@ def import_koishi_database(
                 converted = convert_koishi_row(table, record)
                 if converted is None:
                     continue
-                existing = target_database.get(table, {"id": converted["id"]})
+                existing = await target_database.get(table, {"id": converted["id"]})
                 if existing and not overwrite:
                     continue
                 if existing and overwrite:
-                    target_database.update(table, {"id": converted["id"]}, converted)
+                    await target_database.update(table, {"id": converted["id"]}, converted)
                 else:
-                    target_database.insert(table, converted)
+                    await target_database.insert(table, converted)
                 imported += 1
             counts[table] = imported
     finally:
@@ -438,6 +438,8 @@ def convert_koishi_row(table: str, record: dict[str, Any]) -> Optional[dict[str,
         if table in BOOL_COLUMNS and new_column in BOOL_COLUMNS[table]:
             value = 1 if value in (True, 1, "1", b"1") else 0
         out[new_column] = value
+    if "story_id" in out and out["story_id"]:
+        out["story_id"] = rewrite_story_id(out["story_id"])
     if table == "interlude_story":
         old_id = str(record.get("id") or "")
         out["id"] = rewrite_story_id(old_id)
@@ -453,6 +455,5 @@ def convert_koishi_row(table: str, record: dict[str, Any]) -> Optional[dict[str,
             else "FriendMessage"
         out.setdefault("message_type", message_type)
     if table == "interlude_fact" and isinstance(out.get("embedding"), list) and not out["embedding"]:
-        out["embedding"] = "[]"
-        del out["embedding"]
+        out["embedding"] = None
     return out or None

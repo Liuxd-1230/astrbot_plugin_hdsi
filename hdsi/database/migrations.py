@@ -5,9 +5,11 @@ migration/export tool can map rows 1:1. Timestamps are stored as ISO-8601
 UTC text; JSON columns are TEXT.
 """
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 TABLES: tuple[str, ...] = (
+    "interlude_character",
+    "interlude_conversation_binding",
     "interlude_story",
     "interlude_participant",
     "interlude_script_entry",
@@ -26,6 +28,32 @@ CREATE TABLE IF NOT EXISTS hdsi_meta (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS interlude_character (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  avatar TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  story_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_character_status ON interlude_character(status, is_default DESC);
+CREATE INDEX IF NOT EXISTS idx_character_story ON interlude_character(story_id);
+
+CREATE TABLE IF NOT EXISTS interlude_conversation_binding (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  platform_id TEXT NOT NULL DEFAULT '',
+  self_id TEXT NOT NULL DEFAULT '',
+  conversation_id TEXT NOT NULL DEFAULT '',
+  character_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_binding_conv ON interlude_conversation_binding(platform_id, self_id, conversation_id);
+CREATE INDEX IF NOT EXISTS idx_binding_char ON interlude_conversation_binding(character_id);
 
 CREATE TABLE IF NOT EXISTS interlude_story (
   id TEXT PRIMARY KEY,

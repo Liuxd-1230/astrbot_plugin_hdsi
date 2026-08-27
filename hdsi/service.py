@@ -34,7 +34,10 @@ from .types import (
     AgencyConfig,
     AgencyWindowState,
     BrowserIntentDraft,
+    CharacterRecord,
+    CharacterStatus,
     ContinuitySnapshot,
+    ConversationBinding,
     FactScope,
     IntentStatus,
     IntentUpdateDraft,
@@ -59,6 +62,7 @@ from .types import (
     StatePatchProposal,
     StatePatchTarget,
     StorySetting,
+    StorySettingOverlay,
     StoryState,
     WebObservation,
     clip,
@@ -95,15 +99,21 @@ class IncomingEvent:
     platform_id: str
     self_id: str
     sender_id: str
-    sender_name: str
-    umo: str
-    message_type: str  # FriendMessage | GroupMessage
+    sender_name: str = ""
+    umo: str = ""
+    message_type: str = "FriendMessage"  # FriendMessage | GroupMessage
     group_id: str = ""
     content: str = ""
     image_sources: list[str] = field(default_factory=list)
     is_mention: bool = False
     is_admin: bool = False
     message_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.sender_name:
+            self.sender_name = f"user_{self.sender_id}"
+        if not self.umo:
+            self.umo = f"{self.platform_id}:{self.message_type}:{self.group_id or self.sender_id}"
 
 
 SenderFn = Callable[[InterludeStory, InterludeParticipant, str], Awaitable[bool]]
@@ -324,8 +334,377 @@ class InterludeService:
             )
         return canonical
 
-    async def latest_active_story(self) -> Optional[InterludeStory]:
-        """Non-destructive view helper: most recent active story overall."""
+    # ------------------------------------------------------------ character registry
+
+    async def ensure_character_registry(self) -> list[CharacterRecord]:
+        """Ensure at least one character exists; auto-registers existing stories as default characters."""
+        chars = await self.db.get("interlude_character", {})
+        if chars:
+            return [CharacterRecord.model_validate(c) for c in chars]
+
+        stories = await self.db.get("interlude_story", {})
+        records: list[CharacterRecord] = []
+        now = self.now()
+        if stories:
+            for i, s in enumerate(stories):
+                story = InterludeStory.model_validate(s)
+                char_id = "default" if i == 0 else f"char_{story.id.replace(':', '_')}"
+                char_name = story.setting.character.name or "千"
+                rec = CharacterRecord(
+                    id=char_id,
+                    name=char_name,
+                    avatar="",
+                    description=story.setting.character.profile or "",
+                    story_id=story.id,
+                    status=CharacterStatus.ACTIVE if story.status == "active" else CharacterStatus.ARCHIVED,
+                    is_default=(i == 0),
+                    created_at=story.created_at,
+                    updated_at=story.updated_at,
+                )
+                await self.db.insert("interlude_character", rec.model_dump(mode="json"))
+                records.append(rec)
+        else:
+            default_story_id = "story:default"
+            setting = self.initial_story_setting(self.config.story_defaults.character_name)
+            story = InterludeStory(
+                id=default_story_id,
+                platform_id="default",
+                self_id="default",
+                status="active",
+                setting=setting,
+                state=empty_story_state(),
+                cursor_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+            await self.db.insert("interlude_story", story.model_dump(mode="json"))
+            rec = CharacterRecord(
+                id="default",
+                name=setting.character.name,
+                avatar="",
+                description=setting.character.profile,
+                story_id=default_story_id,
+                status=CharacterStatus.ACTIVE,
+                is_default=True,
+                created_at=now,
+                updated_at=now,
+            )
+            await self.db.insert("interlude_character", rec.model_dump(mode="json"))
+            records.append(rec)
+        return records
+
+    async def list_characters(self, include_archived: bool = True) -> list[CharacterRecord]:
+        query = {} if include_archived else {"status": "active"}
+        rows = await self.db.get("interlude_character", query, order_by="created_at", descending=False)
+        if not rows:
+            return await self.ensure_character_registry()
+        return [CharacterRecord.model_validate(r) for r in rows]
+
+    async def get_character(self, character_id: str) -> Optional[CharacterRecord]:
+        rows = await self.db.get("interlude_character", {"id": character_id})
+        if rows:
+            return CharacterRecord.model_validate(rows[0])
+        return None
+
+    async def get_default_character(self) -> Optional[CharacterRecord]:
+        rows = await self.db.get("interlude_character", {"is_default": 1, "status": "active"}, limit=1)
+        if rows:
+            return CharacterRecord.model_validate(rows[0])
+        rows = await self.db.get("interlude_character", {"status": "active"}, order_by="created_at", limit=1)
+        if rows:
+            return CharacterRecord.model_validate(rows[0])
+        chars = await self.ensure_character_registry()
+        return chars[0] if chars else None
+
+    async def set_default_character(self, character_id: str) -> bool:
+        target = await self.get_character(character_id)
+        if not target:
+            return False
+        now = self.now()
+        all_chars = await self.db.get("interlude_character", {})
+        for c in all_chars:
+            await self.db.update("interlude_character", {"id": c["id"]}, {"is_default": 0, "updated_at": iso(now)})
+        await self.db.update("interlude_character", {"id": character_id}, {"is_default": 1, "updated_at": iso(now)})
+        return True
+
+    async def create_character_record(
+        self,
+        name: str,
+        description: str = "",
+        avatar: str = "",
+        canon: Optional[StorySetting | dict] = None,
+        is_default: bool = False,
+        character_id: Optional[str] = None,
+    ) -> CharacterRecord:
+        now = self.now()
+        char_name = (name or "").strip() or "Unnamed character"
+        char_id = (character_id or "").strip() or f"char_{int(now.timestamp())}_{abs(hash(char_name)) % 10000:04d}"
+        story_id = f"story:{char_id}"
+
+        if isinstance(canon, StorySetting):
+            setting = canon.model_copy(deep=True)
+            setting.character.name = char_name
+            if description:
+                setting.character.profile = description
+        elif isinstance(canon, dict):
+            setting = self.initial_story_setting(char_name).merged(canon)
+            setting.character.name = char_name
+            if description:
+                setting.character.profile = description
+        else:
+            setting = self.initial_story_setting(char_name)
+            if description:
+                setting.character.profile = description
+
+        story = InterludeStory(
+            id=story_id,
+            platform_id="custom",
+            self_id=char_id,
+            status="active",
+            setting=setting,
+            state=empty_story_state(),
+            cursor_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+        await self.db.insert("interlude_story", story.model_dump(mode="json"))
+        await self.ensure_continuity(story, now)
+        await self.append_entry(story.id, ScriptEntryDraft(
+            kind="setup", actor="system",
+            content=f"The story begins with {setting.character.name}.",
+            occurred_at=iso(now), metadata={},
+        ), now)
+        await self.schedule_next_automatic_advance(story.id, now)
+
+        if is_default:
+            all_chars = await self.db.get("interlude_character", {})
+            for c in all_chars:
+                await self.db.update("interlude_character", {"id": c["id"]}, {"is_default": 0, "updated_at": iso(now)})
+
+        record = CharacterRecord(
+            id=char_id,
+            name=char_name,
+            avatar=avatar or "",
+            description=description or setting.character.profile or "",
+            story_id=story_id,
+            status=CharacterStatus.ACTIVE,
+            is_default=is_default,
+            created_at=now,
+            updated_at=now,
+        )
+        await self.db.insert("interlude_character", record.model_dump(mode="json"))
+        return record
+
+    async def update_character_record(
+        self,
+        character_id: str,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        avatar: Optional[str] = None,
+        status: Optional[str] = None,
+        is_default: Optional[bool] = None,
+        canon: Optional[dict] = None,
+    ) -> CharacterRecord:
+        char = await self.get_character(character_id)
+        if not char:
+            raise LookupError(f"Character not found: {character_id}")
+        now = self.now()
+        updates: dict[str, Any] = {"updated_at": iso(now)}
+        if name is not None and name.strip():
+            updates["name"] = name.strip()
+        if description is not None:
+            updates["description"] = description
+        if avatar is not None:
+            updates["avatar"] = avatar
+        if status is not None and status in ("active", "archived"):
+            updates["status"] = status
+            await self.db.update("interlude_story", {"id": char.story_id}, {
+                "status": "active" if status == "active" else "paused",
+                "updated_at": iso(now),
+            })
+        if is_default is True:
+            all_chars = await self.db.get("interlude_character", {})
+            for c in all_chars:
+                await self.db.update("interlude_character", {"id": c["id"]}, {"is_default": 0, "updated_at": iso(now)})
+            updates["is_default"] = 1
+
+        await self.db.update("interlude_character", {"id": character_id}, updates)
+
+        story_rows = await self.db.get("interlude_story", {"id": char.story_id})
+        if story_rows:
+            story = InterludeStory.model_validate(story_rows[0])
+            setting_data = story.setting.model_dump()
+            if name and name.strip():
+                setting_data["character"]["name"] = name.strip()
+            if description is not None:
+                setting_data["character"]["profile"] = description
+            if canon and isinstance(canon, dict):
+                for k, v in canon.items():
+                    if k == "character" and isinstance(v, dict):
+                        setting_data["character"].update(v)
+                    elif k in setting_data:
+                        setting_data[k] = v
+            new_setting = StorySetting.model_validate(setting_data)
+            await self.db.update("interlude_story", {"id": char.story_id}, {
+                "setting": new_setting.model_dump(mode="json"),
+                "updated_at": iso(now),
+            })
+
+        updated_char = await self.get_character(character_id)
+        assert updated_char is not None
+        return updated_char
+
+    async def clone_character_record(self, source_character_id: str, new_name: str) -> CharacterRecord:
+        source_char = await self.get_character(source_character_id)
+        if not source_char:
+            raise LookupError(f"Source character not found: {source_character_id}")
+        source_story = await self.get_story(source_char.story_id)
+        canon_setting = source_story.setting.model_copy(deep=True)
+        return await self.create_character_record(
+            name=new_name.strip() or f"{source_char.name} (副本)",
+            description=source_char.description,
+            avatar=source_char.avatar,
+            canon=canon_setting,
+            is_default=False,
+        )
+
+    async def delete_or_archive_character(self, character_id: str, purge_data: bool = False) -> None:
+        char = await self.get_character(character_id)
+        if not char:
+            return
+        bindings = await self.db.get("interlude_conversation_binding", {"character_id": character_id})
+        for b in bindings:
+            await self.db.execute("DELETE FROM interlude_conversation_binding WHERE id=?", (b["id"],))
+
+        if purge_data:
+            self.invalidate_buffered_narratives(char.story_id)
+            tables = (
+                "interlude_script_entry",
+                "interlude_participant",
+                "interlude_memory",
+                "interlude_intent",
+                "interlude_scene",
+                "interlude_arc",
+                "interlude_fact",
+                "interlude_state_patch",
+                "interlude_overlay_snapshot",
+                "interlude_web_observation",
+            )
+            for table in tables:
+                await self.db.execute(f"DELETE FROM {table} WHERE story_id=?", (char.story_id,))
+            await self.db.execute("DELETE FROM interlude_story WHERE id=?", (char.story_id,))
+            await self.db.execute("DELETE FROM interlude_character WHERE id=?", (character_id,))
+        else:
+            now = self.now()
+            await self.db.update("interlude_character", {"id": character_id}, {
+                "status": CharacterStatus.ARCHIVED.value, "is_default": 0, "updated_at": iso(now),
+            })
+            await self.db.update("interlude_story", {"id": char.story_id}, {
+                "status": "paused", "updated_at": iso(now),
+            })
+
+    async def export_character_config(self, character_id: str) -> dict[str, Any]:
+        char = await self.get_character(character_id)
+        if not char:
+            raise LookupError(f"Character not found: {character_id}")
+        story = await self.get_story(char.story_id)
+        return {
+            "version": 1,
+            "type": "hdsi_character_export",
+            "character": {
+                "id": char.id,
+                "name": char.name,
+                "avatar": char.avatar,
+                "description": char.description,
+            },
+            "canon": story.setting.model_dump(mode="json"),
+        }
+
+    async def import_character_config(self, payload: dict[str, Any], name_override: str | None = None) -> CharacterRecord:
+        char_data = payload.get("character") or {}
+        canon_data = payload.get("canon") or {}
+        name = (name_override or "").strip() or char_data.get("name") or canon_data.get("character", {}).get("name") or "导入角色"
+        desc = char_data.get("description") or canon_data.get("character", {}).get("profile") or ""
+        avatar = char_data.get("avatar") or ""
+        return await self.create_character_record(
+            name=name,
+            description=desc,
+            avatar=avatar,
+            canon=canon_data,
+            is_default=False,
+        )
+
+    # ------------------------------------------------------------ conversation bindings
+
+    async def list_conversation_bindings(self) -> list[ConversationBinding]:
+        rows = await self.db.get("interlude_conversation_binding", {}, order_by="updated_at", descending=True)
+        return [ConversationBinding.model_validate(r) for r in rows]
+
+    async def get_conversation_binding(
+        self, platform_id: str, self_id: str, conversation_id: str
+    ) -> Optional[ConversationBinding]:
+        rows = await self.db.get("interlude_conversation_binding", {
+            "platform_id": platform_id,
+            "self_id": self_id,
+            "conversation_id": conversation_id,
+        }, limit=1)
+        if rows:
+            return ConversationBinding.model_validate(rows[0])
+        return None
+
+    async def set_conversation_binding(
+        self, platform_id: str, self_id: str, conversation_id: str, character_id: str
+    ) -> ConversationBinding:
+        char = await self.get_character(character_id)
+        if not char:
+            raise LookupError(f"Character not found: {character_id}")
+        now = self.now()
+        existing = await self.get_conversation_binding(platform_id, self_id, conversation_id)
+        if existing is not None:
+            await self.db.update("interlude_conversation_binding", {"id": existing.id}, {
+                "character_id": character_id,
+                "updated_at": iso(now),
+            })
+            existing.character_id = character_id
+            existing.updated_at = now
+            return existing
+        binding = ConversationBinding(
+            platform_id=platform_id,
+            self_id=self_id,
+            conversation_id=conversation_id,
+            character_id=character_id,
+            created_at=now,
+            updated_at=now,
+        )
+        data = binding.model_dump(mode="json")
+        data.pop("id", None)
+        await self.db.insert("interlude_conversation_binding", data)
+        return binding
+
+    async def delete_conversation_binding(
+        self, platform_id: str, self_id: str, conversation_id: str
+    ) -> bool:
+        existing = await self.get_conversation_binding(platform_id, self_id, conversation_id)
+        if existing and existing.id:
+            await self.db.execute("DELETE FROM interlude_conversation_binding WHERE id=?", (existing.id,))
+            return True
+        return False
+
+    # ------------------------------------------------------------ story retrieval & routing
+
+    async def latest_active_story(self, character_id: Optional[str] = None) -> Optional[InterludeStory]:
+        """Non-destructive view helper: active story for character_id or default."""
+        if character_id:
+            char = await self.get_character(character_id)
+            if char:
+                rows = await self.db.get("interlude_story", {"id": char.story_id})
+                if rows:
+                    return InterludeStory.model_validate(rows[0])
+        default_char = await self.get_default_character()
+        if default_char:
+            rows = await self.db.get("interlude_story", {"id": default_char.story_id})
+            if rows:
+                return InterludeStory.model_validate(rows[0])
         rows = await self.db.get(
             "interlude_story", {"status": "active"},
             order_by="updated_at", descending=True, limit=1,
@@ -336,6 +715,34 @@ class InterludeService:
         return f"character:{event.platform_id}:{event.self_id}"
 
     async def find_story_for_event(self, event: IncomingEvent) -> Optional[InterludeStory]:
+        # 1. Exact conversation binding match
+        conv_id = event.group_id if event.message_type == "GroupMessage" else event.sender_id
+        if conv_id:
+            binding = await self.get_conversation_binding(event.platform_id, event.self_id, conv_id)
+            if binding is not None:
+                char = await self.get_character(binding.character_id)
+                if char and char.status == CharacterStatus.ACTIVE:
+                    story = await self.get_story(char.story_id)
+                    if story and story.status == "active":
+                        return story
+
+        # 2. Wildcard bot binding match ("*")
+        binding_wildcard = await self.get_conversation_binding(event.platform_id, event.self_id, "*")
+        if binding_wildcard is not None:
+            char = await self.get_character(binding_wildcard.character_id)
+            if char and char.status == CharacterStatus.ACTIVE:
+                story = await self.get_story(char.story_id)
+                if story and story.status == "active":
+                    return story
+
+        # 3. Default character match
+        default_char = await self.get_default_character()
+        if default_char and default_char.status == CharacterStatus.ACTIVE:
+            story = await self.get_story(default_char.story_id)
+            if story and story.status == "active":
+                return story
+
+        # 4. Identity-scoped story fallback
         preferred = self.story_id_for(event)
         existing = await self.get_canonical_story(
             preferred, platform_id=event.platform_id, self_id=event.self_id,
@@ -345,30 +752,30 @@ class InterludeService:
         rows = await self.db.get("interlude_story", {"id": preferred})
         if rows:
             return InterludeStory.model_validate(rows[0])
+        # 5. Single active story fallback
+        active = await self.active_stories()
+        if len(active) == 1:
+            return active[0]
         return None
 
     async def active_stories(self) -> list[InterludeStory]:
-        """All active stories across bot identities (bounded by config)."""
+        """All active stories across active characters (bounded by config)."""
+        chars = await self.db.get("interlude_character", {"status": "active"})
+        if chars:
+            active_story_ids = {c["story_id"] for c in chars}
+            rows = await self.db.get(
+                "interlude_story", {"status": "active"},
+                order_by="updated_at", descending=True,
+                limit=max(1, self.config.runtime.max_stories_per_sweep * 2),
+            )
+            filtered = [r for r in rows if r["id"] in active_story_ids]
+            return [InterludeStory.model_validate(r) for r in filtered[:self.config.runtime.max_stories_per_sweep]]
         rows = await self.db.get(
             "interlude_story", {"status": "active"},
             order_by="updated_at", descending=True,
             limit=max(1, self.config.runtime.max_stories_per_sweep),
         )
-
-        # Enforce the per-identity single-story invariant.
-        seen_identity: set[tuple[str, str]] = set()
-        out: list[InterludeStory] = []
-        now = self.now()
-        for story in [InterludeStory.model_validate(r) for r in rows]:
-            key = (story.platform_id, story.self_id)
-            if key in seen_identity:
-                await self.update_row("interlude_story", {"id": story.id}, {
-                    "status": "archived", "updated_at": iso(now),
-                })
-                continue
-            seen_identity.add(key)
-            out.append(story)
-        return out
+        return [InterludeStory.model_validate(r) for r in rows]
 
     async def get_story(self, story_id: str) -> InterludeStory:
         rows = await self.db.get("interlude_story", {"id": story_id})
@@ -380,8 +787,23 @@ class InterludeService:
         await self.db.update(table, query, data)
 
     async def create_story(self, event: IncomingEvent, name: str | None = None) -> InterludeStory:
-        existing = await self.find_story_for_event(event)
+        preferred = self.story_id_for(event)
+        existing = await self.get_canonical_story(
+            preferred, platform_id=event.platform_id, self_id=event.self_id,
+        )
+        if existing is None:
+            rows = await self.db.get("interlude_story", {"id": preferred})
+            if rows:
+                existing = InterludeStory.model_validate(rows[0])
         if existing is not None:
+            if name and name.strip():
+                new_name = name.strip()
+                if existing.setting.character.name != new_name:
+                    existing.setting.character.name = new_name
+                    await self.db.update("interlude_story", {"id": existing.id}, {
+                        "setting": existing.setting.model_dump(mode="json"),
+                        "updated_at": iso(self.now()),
+                    })
             if event.message_type == "FriendMessage":
                 await self.ensure_participant(existing, event)
             return existing
@@ -419,6 +841,37 @@ class InterludeService:
         ), now)
         await self.schedule_next_automatic_advance(story.id, now)
         return story
+
+    async def sync_story_setting_from_defaults(
+        self, story_id: str | None = None, name: str | None = None, character_id: str | None = None
+    ) -> None:
+        """Update active story setting with current story_defaults and optional name override."""
+        defaults = self.config.story_defaults
+        if character_id:
+            char = await self.get_character(character_id)
+            targets = [await self.get_story(char.story_id)] if char else []
+        elif story_id:
+            targets = [await self.get_story(story_id)]
+        else:
+            default_char = await self.get_default_character()
+            if default_char:
+                targets = [await self.get_story(default_char.story_id)]
+            else:
+                targets = await self.active_stories()
+        now = self.now()
+        for story in targets:
+            new_name = (name or "").strip() or defaults.character_name or story.setting.character.name
+            name_changed = story.setting.character.name != new_name
+            setting = self.initial_story_setting(new_name)
+            update_payload: dict[str, Any] = {
+                "setting": setting.model_dump(mode="json"),
+                "updated_at": iso(now),
+            }
+            if name_changed:
+                state = story.state.model_copy(deep=True)
+                state.setting_overlay = StorySettingOverlay()
+                update_payload["state"] = state.model_dump(mode="json")
+            await self.db.update("interlude_story", {"id": story.id}, update_payload)
 
     def initial_story_setting(self, name: str | None = None) -> StorySetting:
         setting = empty_story_setting()
@@ -534,8 +987,9 @@ class InterludeService:
         participants = [InterludeParticipant.model_validate(r) for r in rows]
 
         def same_endpoint(p: InterludeParticipant) -> bool:
+            same_plat = (p.platform_id == event.platform_id) or ({p.platform_id, event.platform_id} == {"QQ机器人", "qq_official"})
             return (
-                p.platform_id == event.platform_id
+                same_plat
                 and normalize_account_id(p.self_id) == normalize_account_id(event.self_id)
                 and p.session_key == event.sender_id
             )
@@ -543,9 +997,13 @@ class InterludeService:
         for participant in participants:
             if same_endpoint(participant):
                 return participant
-        # Fallback: match by UMO when session_key differs across reloads.
+        # Fallback 1: match by UMO
         for participant in participants:
-            if participant.umo == event.umo:
+            if participant.umo and participant.umo == event.umo:
+                return participant
+        # Fallback 2: match by person_id within the same story
+        for participant in participants:
+            if participant.person_id and participant.person_id == event.sender_id:
                 return participant
         return None
 
@@ -953,10 +1411,13 @@ def normalize_group_id(value: Any) -> str:
 
 
 def account_enabled(rules: Iterable, account_id: str) -> bool:
+    rules_list = list(rules or [])
+    if not rules_list:
+        return True
     normalized = normalize_account_id(account_id)
     if not normalized:
         return False
-    for rule in rules:
+    for rule in rules_list:
         if rule.enabled and normalize_account_id(rule.id) == normalized:
             return True
     return False

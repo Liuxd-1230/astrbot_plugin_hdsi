@@ -73,6 +73,11 @@ class StoryStatus(str, enum.Enum):
     ARCHIVED = "archived"
 
 
+class CharacterStatus(str, enum.Enum):
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
 class SceneStatus(str, enum.Enum):
     ACTIVE = "active"
     CLOSED = "closed"
@@ -260,6 +265,28 @@ class AlterSystemState(_Model):
 
 # ---------------------------------------------------------------- rows
 
+class CharacterRecord(_Model):
+    id: str
+    name: str
+    avatar: str = ""
+    description: str = ""
+    story_id: str
+    status: CharacterStatus = CharacterStatus.ACTIVE
+    is_default: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConversationBinding(_Model):
+    id: Optional[int] = None
+    platform_id: str = ""
+    self_id: str = ""
+    conversation_id: str = ""
+    character_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class InterludeStory(_Model):
     id: str
     platform_id: str
@@ -302,7 +329,7 @@ class InterludeParticipant(_Model):
     profile: str
     relationship: str
     state: ParticipantState = Field(default_factory=ParticipantState)
-    status: Literal["active", "paused"] = "active"
+    status: Literal["active", "paused", "archived"] = "active"
     created_at: datetime
     updated_at: datetime
 

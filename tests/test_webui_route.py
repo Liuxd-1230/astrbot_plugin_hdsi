@@ -44,8 +44,11 @@ class TestFrontendBridgePath:
     def test_no_api_base_constant(self):
         assert "API_BASE" not in _js()
 
-    def test_no_bridge_sdk_script_tag(self):
-        assert "page-bridge-sdk.js" not in _js()
+    def test_bridge_sdk_with_fallback(self):
+        js = _js()
+        assert "page-bridge-sdk.js" in js
+        assert "onerror" in js
+        assert "direct fetch" in js
 
     def test_normalize_endpoint_exists(self):
         assert "normalizeEndpoint" in _js()

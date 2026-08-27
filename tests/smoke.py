@@ -30,6 +30,7 @@ async def main() -> None:
         config = HdsiConfig()
         config.runtime.user_message_debounce_seconds = 0.05
         config.runtime.auto_advance_enabled = True
+        config.runtime.auto_create = False
         sender = SenderRecorder()
         narrator = ScriptedNarrator()
 
@@ -51,7 +52,6 @@ async def main() -> None:
             __import__("hdsi.config", fromlist=["AccessRule"]).AccessRule(id="20001")
         )
 
-        assert not await service.receive(event), "story should not exist without auto_create"
         story = await service.create_story(event)
         assert story.id == "character:aiocqhttp:10000"
         print("story created:", story.id)

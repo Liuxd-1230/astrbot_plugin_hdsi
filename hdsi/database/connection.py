@@ -20,6 +20,8 @@ import aiosqlite
 
 from ..concurrency import WriteQueue, is_transient_db_error
 from ..types import (
+    CharacterRecord,
+    ConversationBinding,
     InterludeArc,
     InterludeParticipant,
     InterludeScene,
@@ -44,6 +46,8 @@ from .migrations import DDL, SCHEMA_VERSION
 logger = logging.getLogger("hdsi.database")
 
 MODEL_BY_TABLE = {
+    "interlude_character": CharacterRecord,
+    "interlude_conversation_binding": ConversationBinding,
     "interlude_story": InterludeStory,
     "interlude_participant": InterludeParticipant,
     "interlude_script_entry": ScriptEntry,
@@ -58,6 +62,8 @@ MODEL_BY_TABLE = {
 }
 
 DATE_FIELDS: dict[str, tuple[str, ...]] = {
+    "interlude_character": ("created_at", "updated_at"),
+    "interlude_conversation_binding": ("created_at", "updated_at"),
     "interlude_story": ("cursor_at", "created_at", "updated_at"),
     "interlude_participant": ("created_at", "updated_at"),
     "interlude_script_entry": ("occurred_at", "created_at"),
@@ -112,6 +118,9 @@ COLUMN_ALIASES: dict[str, dict[str, str]] = {
         "personId": "person_id",
         "displayName": "display_name",
         "cursorAt": "cursor_at",
+        "characterId": "character_id",
+        "conversationId": "conversation_id",
+        "isDefault": "is_default",
     }
 }
 
@@ -469,6 +478,9 @@ def _to_db_value(op: str, value: Any) -> Any:
     return value
 
 
+_DICT_JSON_FIELDS = {"setting", "state", "metadata", "payload"}
+
+
 def _prepare_row(table: str, data: dict[str, Any]) -> dict[str, Any]:
     """Convert python values into SQLite-storable text for one row."""
     json_fields = JSON_FIELDS.get(table, ())
@@ -476,8 +488,11 @@ def _prepare_row(table: str, data: dict[str, Any]) -> dict[str, Any]:
     for key, value in data.items():
         if key in json_fields:
             if value is None:
-                out[key] = None if key == "embedding" else "{}" if False else None
-                if key != "embedding":
+                if key == "embedding":
+                    out[key] = None
+                elif key in _DICT_JSON_FIELDS:
+                    out[key] = "{}"
+                else:
                     out[key] = "[]"
             elif isinstance(value, (dict, list)):
                 out[key] = json.dumps(value, ensure_ascii=False)
